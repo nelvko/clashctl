@@ -16,7 +16,7 @@ cat >"$WORK_DIR/bin/systemctl" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$UNINSTALL_CALLS"
 case $1 in
-is-active) [ -f "$UNINSTALL_ACTIVE" ] ;;
+is-active) if [ -f "$UNINSTALL_ACTIVE" ]; then echo active; else echo inactive; exit 3; fi ;;
 stop) [ "${FAIL_STOP:-0}" = 0 ] && rm -f "$UNINSTALL_ACTIVE" ;;
 *) exit 0 ;;
 esac
