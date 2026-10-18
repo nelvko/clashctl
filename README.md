@@ -3,7 +3,7 @@
 </h1>
 
 <p align="center">
-  Linux 上的 Mihomo / Clash 安装与管理工具<br />
+  Linux 上的 Mihomo 安装与管理工具<br />
   <sub>（原 <code>clash-for-linux-install</code>）</sub>
 </p>
 
@@ -62,7 +62,7 @@
 
 ## 📦 安装
 
-首次安装或从旧版升级，执行以下命令（已加速）：
+首次安装或更新受支持的安装，执行以下命令（已加速）：
 
 ```bash
 GH_PROXY=https://gh-proxy.org/
@@ -72,6 +72,14 @@ curl -fsSL "${GH_PROXY}https://raw.githubusercontent.com/nelvko/clashctl/HEAD/in
 
 - `GH_PROXY`：[GitHub 下载加速代理](https://gh-proxy.org/)，失效时可更换[其他可用地址](https://ghproxy.link/)。
 - 没有订阅？[click me](https://get.sushi3.cloud/#/home?code=aHno9F9G)
+
+### 升级兼容性
+
+- **旧安装格式**：不再迁移早期安装、搬迁旧默认目录 `~/clashctl`，或接管旧 nohup/systemd 进程。安装器会自动检查；提示“旧版安装”时，请先备份订阅和自定义配置，使用原安装的卸载脚本卸载，或通过 `--home` 另选目录。嵌套内核布局 `bin/mihomo/mihomo` 也需要先卸载后重装。
+- **仅支持 mihomo**：`--kernel clash` 会报错。受支持格式的安装若仍保存 `clash`，重新运行安装器会先停止并注销旧服务，再切换到 mihomo。`clashctl update` 只更新脚本，不承担内核转换；若旧更新器已替换脚本，仍可用 `clashctl stop` 或安装目录中的卸载脚本安全清理旧内核。
+- **旧维护逻辑**：不再自动暂停旧 cron 任务或等待旧进程；遗留任务和不属于当前安装的进程请用原版本工具清理。
+- **订阅数据**：不再自动转换旧数字 ID 形式的订阅索引。仍使用该格式时，请先在支持它的旧版中运行订阅命令完成转换，再更新。
+- **下载与续装**：`curl` 是必需依赖，不再回退到 `wget`。安装中断后可按输出提示准备完整归档，再运行保留目录中的重试命令；同目录续装会复用已保留的源码。
 
 ## 🚀 快速上手
 
@@ -124,7 +132,7 @@ Global Options:
 ## 🔄 更新
 
 ```bash
-# 更新 clashctl 上游版本
+# 更新 clashctl 脚本，保留用户配置和已安装内核
 clashctl update
 
 # 升级代理内核

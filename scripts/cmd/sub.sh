@@ -22,7 +22,7 @@ clashsub() {
     fi
 
     local cmd=${1:-}
-    shift
+    [ "$#" -eq 0 ] || shift
     case $cmd in
     add) sub_add "$@" ;;
     del | delete) _sub_del "$@" ;;

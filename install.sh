@@ -759,11 +759,14 @@ HELP
                 branch=${branch:-master}
             fi
             export CLASHCTL_HOME="$install_home" CLASHCTL_SRC="$install_home"
+            local refresh_source=true
             if [ -f "$install_home/.env" ] && [ ! -e "$install_home/.clashctl-uninitialized" ] &&
                 [ ! -e "$install_home/.clashctl-incomplete" ]; then
                 _install_intro '更新现有安装' "$install_home" "$home_source" "$local_source" "$branch"
             else
                 _install_intro '继续未完成的安装' "$install_home" "$home_source" "$local_source" "$branch"
+                # 失败提示直接运行保留的安装器；同套源码可使用已准备的归档离线续装。
+                [ "$script_dir" != "$install_home" ] || refresh_source=false
             fi
             if [ "$local_source" = true ] && [ "$method" != archive ]; then
                 printf 'Git 安装不能直接覆盖为未提交的本地源码；请使用远端更新或另选安装目录\n' >&2
@@ -799,7 +802,9 @@ HELP
                     _set_env CLASHCTL_KERNEL mihomo
                 ) || return 1
             fi
-            _install_refresh_current "$install_home" "$local_source" "$script_dir" "$branch" "$proxy" || return 1
+            if [ "$refresh_source" = true ]; then
+                _install_refresh_current "$install_home" "$local_source" "$script_dir" "$branch" "$proxy" || return 1
+            fi
         elif [ "$existing_kind" = prepared ]; then
             prepared_archives=true
             existing_kind=''

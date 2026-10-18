@@ -181,4 +181,16 @@ for shell in bash zsh fish; do
     [ "$rc" -eq 23 ] || fail "$shell hid kernel version failure: $rc"
 done
 
+# 裸 sub 是列出订阅的公开入口；不能被调用方的 errexit 提前终止。
+for entry in direct dispatch; do
+    command=(clashsub)
+    [ "$entry" != dispatch ] || command=(clashctl sub)
+    output=$(bash --noprofile --norc -e -c '
+        . "$CLASHCTL_HOME/scripts/cmd/clashctl.sh"
+        _sub_list() { printf "listed\n"; }
+        "$@"
+        printf "after\n"
+    ' _ "${command[@]}") || fail "$entry bare sub exited under errexit"
+    [ "$output" = $'listed\nafter' ] || fail "$entry bare sub did not list and continue: $output"
+done
 printf 'command-load: ok\n'

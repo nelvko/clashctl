@@ -56,4 +56,20 @@ uninstall_service || fail 'service uninstall failed'
     service_sudo_start || rc=$?
     [ "$rc" = 7 ] || fail 'root start did not preserve failure status'
 )
+# 旧更新器留下的内核仅可清理，普通和特权启动入口都必须先拒绝。
+for kernel in clash mihomo; do
+    for start in service_start service_sudo_start; do
+        (
+            CLASHCTL_KERNEL=$kernel
+            BIN_KERNEL="$WORK_DIR/retired-$kernel/mihomo"
+            [ "$kernel" != mihomo ] || mkdir -p "$BIN_KERNEL"
+            _require_base_config() { touch "$WORK_DIR/start-side-effect"; return 1; }
+            systemctl() { touch "$WORK_DIR/start-side-effect"; return 1; }
+            sudo() { touch "$WORK_DIR/start-side-effect"; return 1; }
+            if "$start" >"$WORK_DIR/retired-start.out" 2>&1; then fail 'retired kernel/layout was started'; fi
+            [ ! -e "$WORK_DIR/start-side-effect" ] || fail 'retired start reached setup or service operations'
+            grep -Eq '安装器|旧版安装' "$WORK_DIR/retired-start.out" || fail 'retired start omitted recovery instructions'
+        )
+    done
+done
 printf 'service-basic: ok\n'

@@ -124,4 +124,23 @@ for shell in bash zsh; do
         [ -z "$(find "$WORK_DIR" -maxdepth 1 -name "$shell-failure-$failure.update.*" -print -quit)" ] || fail 'recovered update left temporary files'
     done
 done
+# 截止外的内核/布局需安装器处理；纯脚本更新不能把它们留在不一致状态。
+for kernel in clash mihomo; do
+    for method in git archive; do
+        home_dir="$WORK_DIR/retired-$kernel-$method"
+        mkdir "$home_dir"
+        "$REAL_GIT" -C "$SOURCE_REPO" archive HEAD | tar -x -C "$home_dir"
+        printf '%s\n%s\n' "$home_dir" "$method" >"$home_dir/.clashctl-install"
+        printf 'CLASHCTL_KERNEL=%s\nINIT_TYPE=nohup\n' "$kernel" >"$home_dir/.env"
+        mkdir -p "$home_dir/bin/$kernel"
+        _source_manifest "$home_dir" >"$home_dir/.clashctl-files"
+        if [ "$method" = git ]; then init_fixture_repo "$home_dir"; fi
+        before=$(sha256sum "$home_dir/scripts/cmd/version.sh")
+        if PATH="$WORK_DIR/bin:$PATH" CLASHCTL_HOME="$home_dir" bash -c '
+            . "$CLASHCTL_HOME/scripts/cmd/clashctl.sh" && clashctl update
+        ' >"$WORK_DIR/retired.out" 2>&1; then fail 'script update accepted retired kernel/layout'; fi
+        grep -Eq '安装器|旧版安装' "$WORK_DIR/retired.out" || fail 'retired update omitted recovery instructions'
+        [ "$(sha256sum "$home_dir/scripts/cmd/version.sh")" = "$before" ] || fail 'rejected update changed source'
+    done
+done
 printf 'update-shells: ok\n'

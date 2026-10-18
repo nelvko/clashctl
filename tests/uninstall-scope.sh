@@ -151,6 +151,26 @@ for rc in .bashrc .zshrc; do
 done
 [ ! -e "$WORK_DIR/user/.config/fish/conf.d/clashctl.fish" ] || fail 'owned fish integration remains'
 
+# 旧更新器可能只替换脚本；仍须按旧二进制路径确认服务归属后卸载。
+for kernel in clash mihomo; do
+    retired_home="$WORK_DIR/retired-$kernel"
+    setup_install "$retired_home"
+    printf 'CLASHCTL_KERNEL=%s\nINIT_TYPE=systemd\n' "$kernel" >"$retired_home/.env"
+    mkdir -p "$retired_home/bin/$kernel"
+    write_rc "$retired_home"
+    touch "$UNINSTALL_ACTIVE"
+    printf 'ExecStart=%s/bin/%s/%s -d %s/resources -f /foreign/runtime.yaml\n' \
+        "$retired_home" "$kernel" "$kernel" "$retired_home" >"$retired_home/service.unit"
+    if run_uninstall "$retired_home"; then fail 'retired layout bypassed foreign unit protection'; fi
+    [ -f "$UNINSTALL_ACTIVE" ] || fail 'foreign unit protection stopped the service'
+    printf 'ExecStart=%s/bin/%s/%s -d %s/resources -f %s/data/runtime.yaml\n' \
+        "$retired_home" "$kernel" "$kernel" "$retired_home" "$retired_home" >"$retired_home/service.unit"
+    if FAIL_STOP=1 run_uninstall "$retired_home"; then fail 'retired layout ignored stop failure'; fi
+    [ -f "$retired_home/service.unit" ] || fail 'failed retired stop removed the unit'
+    run_uninstall "$retired_home" || { cat "$WORK_DIR/output"; fail 'retired layout could not be uninstalled'; }
+    [ ! -e "$retired_home" ] && [ ! -e "$UNINSTALL_ACTIVE" ] || fail 'retired layout cleanup was incomplete'
+done
+
 # TUN 停止只经现有特权接口；拒绝提权时保留目录和引导，允许重试。
 setup_install "$WORK_DIR/tun"
 printf 'CLASHCTL_KERNEL=mihomo\nINIT_TYPE=nohup\n' >"$WORK_DIR/tun/.env"

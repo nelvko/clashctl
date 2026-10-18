@@ -333,7 +333,7 @@ test_contention_stress() {
 
 test_sysv_background_child_cannot_release_parent_lock() {
     _require_base_config() { return 0; }
-    local CLASHCTL_KERNEL=mihomo
+    local CLASHCTL_KERNEL=mihomo BIN_KERNEL="$WORK_DIR/mihomo"
     local ready="$WORK_DIR/sysv-child.ready" child_pid=''
 
     # shellcheck disable=SC2034  # Read dynamically by service_start.

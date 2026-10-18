@@ -217,7 +217,20 @@ _service_nohup_stop_locked() {
         command rm -f -- "$service_pid_path"
 }
 
+_service_require_startable_kernel() {
+    if [ "${CLASHCTL_KERNEL:-}" != mihomo ]; then
+        _ui_error '此安装仍使用旧内核，请重新运行新版安装器切换到 mihomo 后再启动'
+        return 1
+    fi
+    if [ -d "$BIN_KERNEL" ]; then
+        _ui_error '检测到旧版安装的内核目录，请先卸载或通过 --home 指定其他目录重新安装'
+        return 1
+    fi
+    return 0
+}
+
 service_start() {
+    _service_require_startable_kernel || return 1
     _require_base_config || return 1
     detect_service_manager
     case "$service_manager" in
@@ -269,6 +282,7 @@ _service_helper() {
 }
 
 service_sudo_start() {
+    _service_require_startable_kernel || return 1
     if _is_root; then
         service_start
         return
@@ -686,8 +700,21 @@ install_service() (
     return 0
 )
 
+# 旧更新器只替换脚本，可能留下已退役的二进制布局；仅停止/卸载识别旧路径。
+_service_cleanup_kernel_path() {
+    if [ "${CLASHCTL_KERNEL:-}" = clash ]; then
+        printf '%s/bin/clash/clash\n' "$CLASHCTL_HOME"
+    elif [ -d "$BIN_KERNEL" ]; then
+        printf '%s/mihomo\n' "$BIN_KERNEL"
+    else
+        printf '%s\n' "$BIN_KERNEL"
+    fi
+}
+
 # stop 与卸载共用，停止用户进程后再处理本用户的特权进程。
 service_stop_checked() {
+    local BIN_KERNEL=$BIN_KERNEL
+    BIN_KERNEL=$(_service_cleanup_kernel_path) || return 1
     if service_is_active; then
         service_stop || true
         if service_is_active && _service_privileged_marker_exists; then
@@ -699,7 +726,8 @@ service_stop_checked() {
 }
 
 uninstall_service() {
-    local target
+    local target BIN_KERNEL=$BIN_KERNEL
+    BIN_KERNEL=$(_service_cleanup_kernel_path) || return 1
     detect_service_manager
     _service_check_conflict || return 1
     service_stop_checked || return 1

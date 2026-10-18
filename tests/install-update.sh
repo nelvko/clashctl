@@ -615,6 +615,21 @@ grep -q '^CLASHCTL_UPDATE_BRANCH=iu$' "$local_home/.env" || fail 'local installa
 (cd "$local_home" && sha256sum --status -c .clashctl-files) || fail 'local manifest is invalid'
 [ "$(cat "$local_source/.env")" = 'exit 99' ] || fail 'source environment changed'
 [ "$(cat "$local_source/.clashctl-install")" = old-marker ] || fail 'source identity changed'
+# 按失败提示在原目录续装时，已保留的源码无需再次联网。
+offline_home="$WORK_DIR/local-offline"
+if FAIL_PREPARE=1 CLASHCTL_HOME="$offline_home" bash "$local_source/install.sh" --local \
+    >"$WORK_DIR/local-offline.out" 2>&1; then fail 'offline retry fixture did not fail'; fi
+offline_retry=$(retry_command_from_output "$WORK_DIR/local-offline.out")
+mkdir "$WORK_DIR/offline-bin"
+printf '#!/bin/sh\nexit 99\n' >"$WORK_DIR/offline-bin/curl"
+chmod +x "$WORK_DIR/offline-bin/curl"
+cp "$offline_home/.clashctl-files" "$WORK_DIR/offline-manifest.before"
+PATH="$WORK_DIR/offline-bin:$PATH" FAIL_FETCH=1 bash -c "$offline_retry" \
+    >"$WORK_DIR/local-offline-resume.out" 2>&1 ||
+    { cat "$WORK_DIR/local-offline-resume.out"; fail 'retained local source could not resume offline'; }
+cmp "$WORK_DIR/offline-manifest.before" "$offline_home/.clashctl-files" || fail 'offline retry replaced retained source'
+grep -qx 'fixture_version=uncommitted' "$offline_home/scripts/cmd/clashctl.sh" || fail 'offline retry lost local source'
+[ ! -e "$offline_home/.clashctl-incomplete" ] || fail 'offline retry did not complete'
 local_interrupted="$WORK_DIR/local-interrupted"
 if FAIL_PREPARE=1 CLASHCTL_HOME="$local_interrupted" bash "$local_source/install.sh" --local \
     >"$WORK_DIR/local-interrupted.out" 2>&1; then
