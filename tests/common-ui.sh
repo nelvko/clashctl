@@ -1,35 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TEST_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-REPO_DIR=$(cd -- "$TEST_DIR/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
-trap '/usr/bin/rm -rf -- "$WORK_DIR"' EXIT
-
-fail() {
-    printf 'FAIL: %s\n' "$*" >&2
-    exit 1
-}
-
-assert_eq() {
-    local expected=$1 actual=$2 description=$3
-    [ "$expected" = "$actual" ] ||
-        fail "$description: expected [$expected], got [$actual]"
-}
-
-assert_empty() {
-    [ ! -s "$1" ] || fail "$2"
-}
-
-assert_contains() {
-    grep -Fqs -- "$2" "$1" || fail "$3: missing [$2]"
-}
-
-assert_not_contains() {
-    if grep -Fqs -- "$2" "$1"; then
-        fail "$3: unexpectedly found [$2]"
-    fi
-}
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 
 export CLASHCTL_HOME="$WORK_DIR/home"
 export CLASHCTL_KERNEL=mihomo

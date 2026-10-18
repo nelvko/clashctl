@@ -2,17 +2,14 @@
 # 本地 Git 源模拟网络，执行实际管道入口、初始化和更新流程。
 # shellcheck disable=SC2119  # 测试无参数的更新入口
 set -euo pipefail
-REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 interrupt_shell_launcher_pid='' interrupt_shell_main_pid=''
-cleanup() {
+cleanup_hook() {
     [ -z "$interrupt_shell_main_pid" ] || kill "$interrupt_shell_main_pid" 2>/dev/null || true
     [ -z "$interrupt_shell_launcher_pid" ] || kill "$interrupt_shell_launcher_pid" 2>/dev/null || true
     wait 2>/dev/null || true
-    rm -rf -- "$WORK_DIR"
 }
-trap cleanup EXIT
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 retry_command_from_output() {
     awk '/^重试:$/ {
         if ((getline) > 0 && /^  /) {
@@ -26,17 +23,6 @@ export REAL_GIT
 REAL_GIT=$(command -v git)
 export FIXTURE="$WORK_DIR/source" CI=1 CLASHCTL_HOME="$WORK_DIR/installed"
 mkdir -p "$FIXTURE/scripts/lib" "$FIXTURE/scripts/cmd" "$FIXTURE/resources" "$WORK_DIR/bin"
-export TEST_CRONTAB="$WORK_DIR/crontab"
-: >"$TEST_CRONTAB"
-cat >"$WORK_DIR/bin/crontab" <<'CRONTAB'
-#!/usr/bin/env bash
-case ${1:-} in
--l) cat "$TEST_CRONTAB" ;;
--r) : >"$TEST_CRONTAB" ;;
-*) cp "$1" "$TEST_CRONTAB" ;;
-esac
-CRONTAB
-chmod +x "$WORK_DIR/bin/crontab"
 cp "$REPO_DIR/scripts/lib/operation-lock.sh" "$FIXTURE/scripts/lib/"
 cp "$REPO_DIR/scripts/lib/install-maintenance.sh" "$FIXTURE/scripts/lib/"
 cp "$REPO_DIR/scripts/lib/service-process.sh" "$FIXTURE/scripts/lib/"
@@ -53,19 +39,9 @@ cat >"$FIXTURE/scripts/preflight.sh" <<'STUB'
 . "$CLASHCTL_SRC/scripts/lib/common.sh"
 . "$CLASHCTL_SRC/scripts/lib/service-process.sh"
 . "$CLASHCTL_SRC/scripts/lib/operation-lock.sh"
-CLASH_DATA_DIR="$CLASHCTL_HOME/data"
-CLASH_PROFILES_DIR="$CLASH_DATA_DIR/profiles"
-CLASH_RESOURCES_DIR="$CLASHCTL_HOME/resources"
-CLASH_CONFIG_BASE="$CLASH_DATA_DIR/config.yaml"
-CLASH_CONFIG_MIXIN="$CLASH_DATA_DIR/mixin.yaml"
-BIN_YQ=fixture_yq
-fixture_yq() {
-    if [ "${1:-}" = '.mode // "rule"' ]; then
-        if [ -s "$CLASH_CONFIG_BASE" ]; then printf rule; else printf direct; fi
-    else
-        printf existing-secret
-    fi
-}
+STUB
+cat "$TEST_DIR/lib/preflight.fixture" >>"$FIXTURE/scripts/preflight.sh"
+cat >>"$FIXTURE/scripts/preflight.sh" <<'STUB'
 bin_kernel_path() {
     if [ "$CLASHCTL_KERNEL" = mihomo ]; then
         printf '%s/bin/mihomo' "$CLASHCTL_HOME"
@@ -74,7 +50,6 @@ bin_kernel_path() {
     fi
 }
 gh_proxy_url() { [ -z "${GH_PROXY:-}" ] && printf '%s\n' "$1" || printf '%s/%s\n' "${GH_PROXY%/}" "$1"; }
-valid_required() { :; }
 detect_service_manager() { service_manager=${TEST_SERVICE_MANAGER:-nohup}; }
 detect_rc() {
     SHELL_RC_BASH="$HOME/.bashrc"
@@ -82,7 +57,6 @@ detect_rc() {
     SHELL_RC_FISH=
     [ ! -d "$HOME/.config/fish" ] || SHELL_RC_FISH="$HOME/.config/fish/conf.d/clashctl.fish"
 }
-_service_check_conflict() { :; }
 prepare_zip() {
     if [ "${FAIL_PREPARE:-0}" != 0 ]; then
         [ "${FAIL_PREPARE_TIMEOUT:-0}" != 1 ] || CLASHCTL_DOWNLOAD_TIMED_OUT=1
@@ -172,11 +146,7 @@ STUB
 ) >>"$FIXTURE/scripts/preflight.sh"
 # 与真实加载器一致：重载服务库后需要重新检测管理方式。
 printf 'service_manager=\nfixture_version=old\n' >"$FIXTURE/scripts/cmd/clashctl.sh"
-"$REAL_GIT" -C "$FIXTURE" init -q -b master
-"$REAL_GIT" -C "$FIXTURE" config user.email test@example.invalid
-"$REAL_GIT" -C "$FIXTURE" config user.name test
-"$REAL_GIT" -C "$FIXTURE" add .
-"$REAL_GIT" -C "$FIXTURE" commit -qm initial
+init_fixture_repo "$FIXTURE"
 "$REAL_GIT" -C "$FIXTURE" branch iu
 "$REAL_GIT" -C "$FIXTURE" checkout -qb legacy
 "$REAL_GIT" -C "$FIXTURE" rm -q .env.example
@@ -921,64 +891,26 @@ grep -q '^CLASHCTL_UPDATE_BRANCH=iu$' "$WORK_DIR/iu/.env" || fail 'pipeline did 
 
 # 控制终端与脚本 stdin 分离：交互输入和显式订阅共用 PTY 驱动。
 # 继承前面设置的 Git 桩，将源码请求重定向到本地 fixture。
-TEST_REPO="$REPO_DIR" TEST_WORK="$WORK_DIR" python3 - <<'PTY'
-import errno, os, pty, select, signal, time
+TEST_REPO="$REPO_DIR" TEST_WORK="$WORK_DIR" python3 -B - "$TEST_DIR/lib" <<'PTY'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+from terminal import run
 work = os.environ["TEST_WORK"]
 prompt = "订阅链接（回车跳过）: ".encode()
 
 def install_in_terminal(name, args=(), subscription=None):
     home = work + "/" + name
-    pid, fd = pty.fork()
-    if pid == 0:
-        os.environ.pop("CI", None)
-        os.environ["CLASHCTL_HOME"] = home
-        os.environ["CLASHCTL_UPDATE_BRANCH"] = "master"
-        os.environ["TERM"] = "xterm-256color"
-        os.environ["INPUTRC"] = "/dev/null"
-        os.execvp("bash", ["bash", "-c",
-                  'cat "$TEST_REPO/install.sh" | bash -s -- "$@"',
-                  "terminal-install", *args])
-    output, sent, status = b"", False, None
-    try:
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            ready, _, _ = select.select([fd], [], [], 0.1)
-            if ready:
-                try:
-                    chunk = os.read(fd, 65536)
-                except OSError as exc:
-                    if exc.errno != errno.EIO:
-                        raise
-                    break
-                if not chunk:
-                    break
-                output += chunk
-                if subscription is not None and not sent and prompt in output:
-                    data = subscription if isinstance(subscription, bytes) else subscription.encode() + b"\n"
-                    os.write(fd, data)
-                    sent = True
-            child, child_status = os.waitpid(pid, os.WNOHANG)
-            if child:
-                status = child_status
-                break
-        # PTY 关闭可能早于子进程可回收；仍受同一个截止时间约束。
-        while status is None and time.monotonic() < deadline:
-            child, child_status = os.waitpid(pid, os.WNOHANG)
-            if child:
-                status = child_status
-                break
-            time.sleep(0.01)
-        assert status is not None, "TTY installation timed out: " + output.decode(errors="replace")
-        assert os.waitstatus_to_exitcode(status) == 0, output.decode(errors="replace")
-        return home, output, sent
-    finally:
-        if status is None:
-            try:
-                os.kill(pid, signal.SIGKILL)
-                os.waitpid(pid, 0)
-            except ProcessLookupError:
-                pass
-        os.close(fd)
+    env = dict(os.environ, CLASHCTL_HOME=home, CLASHCTL_UPDATE_BRANCH="master",
+               TERM="xterm-256color", INPUTRC="/dev/null")
+    env.pop("CI", None)
+    replies = []
+    if subscription is not None:
+        data = subscription if isinstance(subscription, bytes) else subscription.encode() + b"\n"
+        replies.append((prompt, data))
+    rc, output = run(["bash", "-c", 'cat "$TEST_REPO/install.sh" | bash -s -- "$@"',
+                      "terminal-install", *args], env=env, replies=replies, timeout=20)
+    assert rc == 0, output.decode(errors="replace")
+    return home, output, bool(replies) and prompt in output
 
 home, output, sent = install_in_terminal("tty-install", subscription="file:///private-subscription")
 assert sent, "subscription prompt missing"
@@ -1068,13 +1000,12 @@ if clashupdate >"$WORK_DIR/marker-empty.out" 2>&1; then fail 'empty installation
 grep -q '安装标记为空' "$WORK_DIR/marker-empty.out" || fail 'empty marker had no diagnosis'
 grep -qF "$CLASHCTL_HOME/.clashctl-install" "$WORK_DIR/marker-empty.out" || fail 'empty marker diagnosis did not name the file'
 printf '%s\ngit\n' "$CLASHCTL_HOME" >"$CLASHCTL_HOME/.clashctl-install"
-# 无 Git 和 flock 的真实 PATH：下载器只复制本地 tar 包，其余使用系统工具。
+# 无 Git 的真实 PATH：下载器只复制本地 tar 包，其余使用系统工具。
 no_git_bin="$WORK_DIR/no-git-bin"
 mkdir "$no_git_bin"
 for tool in install bash cat dirname readlink mkdir mktemp rm rmdir mv tar gzip unzip sha256sum find sort xargs chmod cp head stat sleep touch grep sed awk id; do
     ln -s "$(command -v "$tool")" "$no_git_bin/$tool"
 done
-PATH="$no_git_bin" bash -c '! command -v flock >/dev/null 2>&1' || fail 'archive fixture unexpectedly provides flock'
 export SOURCE_ARCHIVE="$WORK_DIR/source.tar.gz" DOWNLOAD_LOG="$WORK_DIR/download.log"
 cat >"$no_git_bin/curl" <<'DOWNLOAD'
 #!/usr/bin/env bash
@@ -1087,7 +1018,6 @@ done
 cp "$SOURCE_ARCHIVE" "$destination"
 DOWNLOAD
 chmod +x "$no_git_bin/curl"
-cp "$no_git_bin/curl" "$no_git_bin/wget"
 archive_source="$WORK_DIR/archive-source"
 mkdir "$archive_source"
 "$REAL_GIT" -C "$FIXTURE" archive HEAD | tar -x -C "$archive_source"

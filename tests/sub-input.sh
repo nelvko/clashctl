@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 # 通过真实 Bash/Zsh/Fish 和 PTY 检查订阅输入，下载与落盘使用桩。
 set -euo pipefail
-REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
-trap 'rm -rf -- "$WORK_DIR"' EXIT
-mkdir -p "$WORK_DIR/home/scripts" "$WORK_DIR/user"
-cp -r "$REPO_DIR/scripts/"{lib,cmd} "$WORK_DIR/home/scripts/"
-printf 'CLASHCTL_KERNEL=mihomo\nINIT_TYPE=nohup\n' >"$WORK_DIR/home/.env"
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
+make_fake_home "$WORK_DIR/home"
+mkdir -p "$WORK_DIR/user"
 cat >"$WORK_DIR/home/scripts/cmd/zz-fixture.sh" <<'EOF'
 _sub_url_exists() { return 1; }
 _sub_download() {
@@ -17,15 +15,14 @@ _sub_download() {
 _with_profiles_lock() { printf '%s' "$3" >"$CLASHCTL_HOME/saved"; }
 EOF
 
-TEST_WORK="$WORK_DIR" python3 - <<'PY'
-import errno
+TEST_WORK="$WORK_DIR" python3 -B - "$TEST_DIR/lib" <<'PY'
 import os
 import pathlib
-import pty
-import select
-import signal
 import subprocess
-import time
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from terminal import run
 
 work = pathlib.Path(os.environ["TEST_WORK"])
 home = work / "home"
@@ -42,47 +39,6 @@ commands = {
              'source "$CLASHCTL_HOME/scripts/cmd/clashctl.fish"; clashctl sub add $argv', "--"],
 }
 
-def terminal(command, data):
-    pid, fd = pty.fork()
-    if pid == 0:
-        os.execvpe(command[0], command, env)
-    output, sent, status = b"", False, None
-    deadline = time.monotonic() + 10
-    try:
-        while time.monotonic() < deadline:
-            ready, _, _ = select.select([fd], [], [], 0.1)
-            if ready:
-                try:
-                    chunk = os.read(fd, 65536)
-                except OSError as exc:
-                    if exc.errno != errno.EIO:
-                        raise
-                    break
-                if not chunk:
-                    break
-                output += chunk
-                if not sent and prompt in output:
-                    os.write(fd, data)
-                    sent = True
-            child, child_status = os.waitpid(pid, os.WNOHANG)
-            if child:
-                status = child_status
-                break
-        while status is None and time.monotonic() < deadline:
-            child, child_status = os.waitpid(pid, os.WNOHANG)
-            if child:
-                status = child_status
-                break
-            time.sleep(0.01)
-        assert status is not None, "input timed out: " + repr(output)
-        assert sent, "subscription prompt missing: " + repr(output)
-        return os.waitstatus_to_exitcode(status), output
-    finally:
-        if status is None:
-            os.kill(pid, signal.SIGKILL)
-            os.waitpid(pid, 0)
-        os.close(fd)
-
 failures, checks = [], 0
 def check(shell, name, data=b"", expected=None, tty=True, args=()):
     global checks
@@ -91,7 +47,8 @@ def check(shell, name, data=b"", expected=None, tty=True, args=()):
     command = commands[shell] + list(args)
     try:
         if tty:
-            rc, output = terminal(command, data)
+            rc, output = run(command, env=env, replies=[(prompt, data)])
+            assert prompt in output, "subscription prompt missing: " + repr(output)
         else:
             result = subprocess.run(command, env=env, input=data, capture_output=True, timeout=10)
             rc, output = result.returncode, result.stdout + result.stderr

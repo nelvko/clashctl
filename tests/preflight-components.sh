@@ -2,33 +2,8 @@
 # shellcheck disable=SC2317  # 校验器与命令桩由 source 的函数间接调用。
 set -euo pipefail
 
-TEST_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-REPO_DIR=$(cd -- "$TEST_DIR/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
-trap '/usr/bin/rm -rf -- "$WORK_DIR"' EXIT
-
-fail() {
-    printf 'FAIL: %s\n' "$*" >&2
-    exit 1
-}
-
-assert_eq() {
-    local expected=$1 actual=$2 description=$3
-    [ "$expected" = "$actual" ] ||
-        fail "$description: expected [$expected], got [$actual]"
-}
-
-assert_contains() {
-    local file=$1 expected=$2 description=$3
-    grep -Fqs -- "$expected" "$file" ||
-        fail "$description: missing [$expected]"
-}
-
-assert_absent() {
-    if [ -e "$1" ] || [ -L "$1" ]; then
-        fail "$2: still exists [$1]"
-    fi
-}
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 
 assert_mode() {
     local expected=$1 path=$2 description=$3 actual

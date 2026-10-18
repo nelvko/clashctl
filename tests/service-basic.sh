@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
-trap 'rm -rf -- "$WORK_DIR"' EXIT
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 export CLASHCTL_HOME="$WORK_DIR/home" CLASHCTL_SRC="$REPO_DIR" CLASHCTL_KERNEL=mihomo INIT_TYPE=systemd
 . "$REPO_DIR/scripts/lib/common.sh"
 . "$REPO_DIR/scripts/lib/operation-lock.sh"

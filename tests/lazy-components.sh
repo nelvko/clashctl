@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # 首次使用 UI/订阅转换器走真实组件安装，只替换网络和运行中的服务。
 set -euo pipefail
-REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
-trap 'rm -rf -- "$WORK_DIR"' EXIT
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 command -v zsh >/dev/null || fail 'zsh is required'
 export COMPONENT_FIXTURES="$WORK_DIR/fixtures" COMPONENT_DOWNLOADS="$WORK_DIR/downloads"
 mkdir -p "$COMPONENT_FIXTURES/subconverter" "$WORK_DIR/bin"
@@ -67,15 +65,15 @@ if [ -n "${BASH_VERSION:-}" ] && _start_convert; then exit 1; fi
 PROBE
 for shell in bash zsh; do
     home_dir="$WORK_DIR/$shell"
-    mkdir -p "$home_dir/bin" "$home_dir/resources" "$home_dir/data"
+    make_fake_home "$home_dir"
+    mkdir -p "$home_dir/resources"
     # Zsh 转发到 Bash 时会重新加载脚本，模拟函数也必须随之加载。
-    cp -a "$REPO_DIR/scripts" "$home_dir/scripts"
     cat >"$home_dir/scripts/cmd/zz-fixture.sh" <<'STUB'
 _detect_ext_addr() { EXT_IP=127.0.0.1; EXT_PORT=9090; }
 service_is_active() { touch "$CLASHCTL_HOME/service-queried"; }
 STUB
     # 模拟失效时应明确失败，不能借用宿主机上已运行的 systemd 服务。
-    printf 'CLASHCTL_KERNEL=mihomo\nINIT_TYPE=nohup\nGH_PROXY=\n' >"$home_dir/.env"
+    printf 'GH_PROXY=\n' >>"$home_dir/.env"
     printf '#!/bin/sh\nprintf 25500\n' >"$home_dir/bin/yq"
     chmod +x "$home_dir/bin/yq"
     : >"$COMPONENT_DOWNLOADS"

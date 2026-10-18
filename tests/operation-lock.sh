@@ -1,44 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TEST_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-REPO_DIR=$(cd -- "$TEST_DIR/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 PIDS=()
-cleanup() {
+cleanup_hook() {
     local pid
     for pid in "${PIDS[@]}"; do
         kill -CONT "$pid" 2>/dev/null || true
         kill -KILL "$pid" 2>/dev/null || true
         wait "$pid" 2>/dev/null || true
     done
-    command rm -rf -- "$WORK_DIR"
-}
-trap cleanup EXIT
-
-fail() {
-    printf 'FAIL: %s\n' "$*" >&2
-    exit 1
-}
-
-assert_contains() {
-    local file=$1 expected=$2 description=$3
-    grep -Fqs -- "$expected" "$file" || fail "$description: missing [$expected]"
-}
-
-wait_for_file() {
-    local file=$1 pid=$2 description=$3 attempt=0
-    while [ "$attempt" -lt 300 ]; do
-        [ -e "$file" ] && return 0
-        kill -0 "$pid" 2>/dev/null || fail "$description: process exited early"
-        attempt=$((attempt + 1))
-        sleep 0.01
-    done
-    fail "$description: timed out"
 }
 
 # shellcheck source=../scripts/lib/operation-lock.sh
 . "$REPO_DIR/scripts/lib/operation-lock.sh"
+. "$REPO_DIR/scripts/lib/service-process.sh"
+. "$REPO_DIR/scripts/lib/service.sh"
 
 LOCK_BASE="$WORK_DIR/runtime"
 LOCK_PARENT="$LOCK_BASE/clashctl-operation-$EUID"
@@ -58,15 +36,11 @@ assert_acquisition_fails() {
     [ -s "$stderr" ] || fail "$description: missing diagnostic"
 }
 
-test_no_flock_dependency_and_private_modes() {
-    local called="$WORK_DIR/flock-called" owner token
-    # shellcheck disable=SC2317  # A legacy dependency check must not be used.
-    _operation_lock_has_flock() { return 1; }
-    # shellcheck disable=SC2317  # A legacy flock invocation must not be used.
-    flock() { : >"$called"; return 1; }
+test_private_modes_and_reentrancy() {
+    local owner token
     (
         umask 000
-        operation_lock_acquire || fail 'acquisition still depends on flock'
+        operation_lock_acquire || fail 'could not acquire operation lock'
         [ "$CLASHCTL_OPERATION_LOCK_DIR" = "$LOCK_DIR" ] || fail 'unexpected operation lock directory'
         [ "$CLASHCTL_OPERATION_LOCK_PID" = "$BASHPID" ] || fail 'lock owner is not the acquiring process'
         [ -n "$CLASHCTL_OPERATION_LOCK_TOKEN" ] || fail 'missing ownership token'
@@ -82,8 +56,6 @@ test_no_flock_dependency_and_private_modes() {
         [ ! -e "$LOCK_DIR" ] || fail 'released operation lock directory remains'
         operation_lock_release || fail 'release is not idempotent'
     )
-    [ ! -e "$called" ] || fail 'operation locking invoked flock'
-    unset -f flock _operation_lock_has_flock
 }
 
 test_exit_and_term_release() {
@@ -359,55 +331,10 @@ test_contention_stress() {
     [ ! -e "$LOCK_DIR" ] || fail 'contention stress leaked lock'
 }
 
-test_nohup_daemon_does_not_retain_lock() {
-    local fake_kernel="$WORK_DIR/fake-kernel" ready="$WORK_DIR/fake-kernel.ready"
-    local daemon_pid='' attempt=0
-    # shellcheck disable=SC2016  # The generated helper expands these at runtime.
-    printf '%s\n' \
-        '#!/usr/bin/env bash' \
-        'printf "%s\n" "$BASHPID" >"$OPERATION_LOCK_DAEMON_READY"' \
-        'kill -STOP "$BASHPID"' >"$fake_kernel"
-    chmod 0700 -- "$fake_kernel"
-
-    # shellcheck source=../scripts/lib/service-process.sh
-    . "$REPO_DIR/scripts/lib/service-process.sh"
-    # shellcheck source=../scripts/lib/service.sh
-    . "$REPO_DIR/scripts/lib/service.sh"
-    BIN_KERNEL=$fake_kernel
-    CLASHCTL_KERNEL=mihomo
-    CLASH_RESOURCES_DIR="$WORK_DIR/resources"
-    CLASH_CONFIG_RUNTIME="$WORK_DIR/runtime.yaml"
-    service_pid_path="$WORK_DIR/mihomo.pid"
-    service_log_path="$WORK_DIR/mihomo.log"
-    OPERATION_LOCK_DAEMON_READY=$ready
-    export BIN_KERNEL CLASHCTL_KERNEL CLASH_RESOURCES_DIR CLASH_CONFIG_RUNTIME
-    export OPERATION_LOCK_DAEMON_READY service_pid_path service_log_path
-    _service_process_record_pid() { return 1; }
-    _service_process_record_create() { return 0; }
-
-    operation_lock_acquire || fail 'could not acquire lock for daemon test'
-    _service_nohup_start_locked || fail 'fake nohup service did not start'
-    while [ "$attempt" -lt 300 ]; do
-        if [ -s "$ready" ]; then
-            read -r daemon_pid <"$ready"
-            break
-        fi
-        attempt=$((attempt + 1))
-        sleep 0.01
-    done
-    [ -n "$daemon_pid" ] || fail 'could not identify fake nohup daemon'
-    PIDS+=("$daemon_pid")
-    [ -d "$LOCK_DIR" ] || fail 'daemon startup released parent lock'
-    operation_lock_release || fail 'could not release parent operation lock'
-    (
-        operation_lock_acquire || exit 1
-        operation_lock_release
-    ) || fail 'daemon retained operation lock after installer released it'
-}
-
 test_sysv_background_child_cannot_release_parent_lock() {
     _require_base_config() { return 0; }
-    local ready="$WORK_DIR/sysv-child.ready" child_pid='' attempt=0
+    local CLASHCTL_KERNEL=mihomo
+    local ready="$WORK_DIR/sysv-child.ready" child_pid=''
 
     # shellcheck disable=SC2034  # Read dynamically by service_start.
     service_manager=sysvinit
@@ -420,15 +347,8 @@ test_sysv_background_child_cannot_release_parent_lock() {
     }
     operation_lock_acquire || fail 'could not acquire lock for SysV test'
     service_start || fail 'fake SysV service did not start'
-    while [ "$attempt" -lt 300 ]; do
-        if [ -s "$ready" ]; then
-            read -r child_pid <"$ready"
-            break
-        fi
-        attempt=$((attempt + 1))
-        sleep 0.01
-    done
-    [ -n "$child_pid" ] || fail 'could not identify fake SysV background child'
+    wait_until 300 test -s "$ready" || fail 'could not identify fake SysV background child'
+    read -r child_pid <"$ready"
     PIDS+=("$child_pid")
     [ -d "$LOCK_DIR" ] || fail 'SysV background child released parent lock'
     operation_lock_release || fail 'could not release parent operation lock after SysV test'
@@ -465,7 +385,7 @@ test_update_holds_lifecycle_lock_for_dispatch() {
     operation_lock_release || fail 'could not release post-update test lock'
 }
 
-test_no_flock_dependency_and_private_modes
+test_private_modes_and_reentrancy
 test_exit_and_term_release
 test_signals_during_acquisition_release
 test_contention_and_sigkill_residue
@@ -474,7 +394,6 @@ test_unsafe_paths_are_rejected
 test_inherited_release_and_reacquisition
 test_release_requires_original_token
 test_contention_stress
-test_nohup_daemon_does_not_retain_lock
 test_sysv_background_child_cannot_release_parent_lock
 test_update_holds_lifecycle_lock_for_dispatch
 

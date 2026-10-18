@@ -4,10 +4,8 @@
 set -euo pipefail
 unset CLASHCTL_HOME
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY
-REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
-trap 'rm -rf -- "$WORK_DIR"' EXIT
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 mkdir -p "$WORK_DIR/bin" "$WORK_DIR/user/.config/fish/conf.d"
 export UNINSTALL_CALLS="$WORK_DIR/service.calls" UNINSTALL_ACTIVE="$WORK_DIR/active"
 REAL_FISH=$(command -v fish)

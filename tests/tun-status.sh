@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
 # TUN 状态归属与同名网卡冲突；不调用宿主网络或服务。
 set -euo pipefail
-REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
-trap 'rm -rf -- "$WORK_DIR"' EXIT
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 export CLASHCTL_HOME="$WORK_DIR/home"
-mkdir -p "$CLASHCTL_HOME/"{scripts,bin,data}
-cp -r "$REPO_DIR/scripts/"{lib,cmd} "$CLASHCTL_HOME/scripts/"
-printf 'CLASHCTL_KERNEL=mihomo\nINIT_TYPE=nohup\n' >"$CLASHCTL_HOME/.env"
+make_fake_home "$CLASHCTL_HOME"
 printf 'false\n' >"$CLASHCTL_HOME/data/runtime.yaml"
 cat >"$CLASHCTL_HOME/bin/yq" <<'EOF'
 #!/usr/bin/env bash
@@ -51,7 +48,6 @@ service_sudo_start() { printf 'start\n' >>"$CLASHCTL_HOME/calls"; return 1; }
 EOF
 # shellcheck source=/dev/null
 . "$CLASHCTL_HOME/scripts/cmd/clashctl.sh"
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 expect_off() {
     local rc=0
     clashctl tun >"$WORK_DIR/output" 2>&1 || rc=$?

@@ -4,9 +4,9 @@
 # shellcheck disable=SC2034  # 配置变量由间接调用的库函数读取。
 set -euo pipefail
 
-REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
-cleanup() {
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
+cleanup_hook() {
     local record pid
     for record in "$WORK_DIR"/*.pid; do
         [ -f "$record" ] || continue
@@ -14,10 +14,7 @@ cleanup() {
         kill -TERM "$pid" 2>/dev/null || true
         wait "$pid" 2>/dev/null || true
     done
-    command rm -rf -- "$WORK_DIR"
 }
-trap cleanup EXIT
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 CLASH_PROFILES_LOCK="$WORK_DIR/profiles.lock"
 # shellcheck source=../scripts/lib/operation-lock.sh
@@ -33,9 +30,6 @@ CLASH_PROFILES_LOCK="$WORK_DIR/profiles.lock"
 
 mkdir -m 0700 -- "$WORK_DIR/runtime"
 _operation_lock_base() { printf '%s\n' "$WORK_DIR/runtime"; }
-
-# 调用 flock 就失败，确保所有测试通过的路径都不依赖它。
-flock() { fail 'subscription operation invoked flock'; }
 
 cat >"$WORK_DIR/daemon" <<'EOF'
 #!/usr/bin/env bash
@@ -60,14 +54,7 @@ fixture_yq() { printf '25500\n'; }
 _replacement_port() { return 1; }
 _service_process_record_pid() { return 1; }
 _service_process_record_create() { return 0; }
-wait_ready() {
-    local attempt
-    for ((attempt = 0; attempt < 200; attempt++)); do
-        [ ! -e "$WORK_DIR/$DAEMON_NAME.ready" ] || return 0
-        sleep 0.01
-    done
-    return 1
-}
+wait_ready() { wait_until 200 test -e "$WORK_DIR/$DAEMON_NAME.ready"; }
 # shellcheck disable=SC2317  # _start_convert 间接调用此探活替身。
 curl() {
     # 启动后的首次探活仍未就绪；后续成功时必须返回 0。
@@ -146,12 +133,7 @@ start_lock_holder() {
         "$WORK_DIR/holder.ready" "$WORK_DIR/holder.release" &
     holder_pid=$!
     printf '%s\n' "$holder_pid" >"$WORK_DIR/holder.pid"
-    local attempt
-    for ((attempt = 0; attempt < 200; attempt++)); do
-        [ ! -e "$WORK_DIR/holder.ready" ] || return 0
-        sleep 0.01
-    done
-    fail 'separate process could not hold subscription lock'
+    wait_until 200 test -e "$WORK_DIR/holder.ready" || fail 'separate process could not hold subscription lock'
 }
 stop_lock_holder() {
     : >"$WORK_DIR/holder.release"

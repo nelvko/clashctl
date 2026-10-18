@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
-trap 'rm -rf -- "$WORK_DIR"' EXIT
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 
 CLASH_RESOURCES_DIR="$WORK_DIR/resources"
 CLASH_CONFIG_DEBUG="$WORK_DIR/last-failed.yaml"

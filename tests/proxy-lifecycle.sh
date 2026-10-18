@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # 真实命令与 Shell 环境；服务用磁盘状态模拟，覆盖 Bash/Zsh/Fish 的子进程边界。
 set -euo pipefail
-REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
-trap 'rm -rf -- "$WORK_DIR"' EXIT
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 for shell in bash zsh fish; do command -v "$shell" >/dev/null || fail "$shell is required"; done
 
 cat >"$WORK_DIR/services.sh" <<'STUB'

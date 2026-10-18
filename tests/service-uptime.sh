@@ -3,24 +3,10 @@
 # shellcheck disable=SC2317
 set -euo pipefail
 
-REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
-CHILD_PID=''
-KEEPER_PID=''
-KEEPER_RELEASE="$WORK_DIR/keeper-release"
-cleanup() {
-    if [ -n "$CHILD_PID" ]; then
-        kill "$CHILD_PID" 2>/dev/null || true
-        wait "$CHILD_PID" 2>/dev/null || true
-    fi
-    if [ -n "$KEEPER_PID" ]; then
-        : >"$KEEPER_RELEASE"
-        wait "$KEEPER_PID" 2>/dev/null || true
-    fi
-    command rm -rf -- "$WORK_DIR"
-}
-trap cleanup EXIT
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
+. "$TEST_DIR/lib/process.sh"
+
 # shellcheck source=../scripts/lib/operation-lock.sh
 . "$REPO_DIR/scripts/lib/operation-lock.sh"
 # shellcheck source=../scripts/lib/service-process.sh
@@ -108,34 +94,8 @@ assert_elapsed error 'exited process' "$CHILD_PID"
 CHILD_PID=''
 
 # 保留真正的僵尸，验证 starttime 尚可读取时也不会返回运行时长。
-cat >"$WORK_DIR/keeper.py" <<'PY'
-import os
-from pathlib import Path
-import subprocess
-import sys
-import time
-
-child = subprocess.Popen(["true"])
-Path(sys.argv[1]).write_text(str(child.pid))
-while not os.path.exists(sys.argv[2]):
-    time.sleep(0.01)
-child.wait()
-PY
-python3 "$WORK_DIR/keeper.py" "$WORK_DIR/zombie-pid" "$KEEPER_RELEASE" &
-KEEPER_PID=$!
-for ((attempt = 0; attempt < 100; attempt++)); do
-    [ ! -s "$WORK_DIR/zombie-pid" ] || break
-    sleep 0.01
-done
-[ -s "$WORK_DIR/zombie-pid" ] || fail 'zombie fixture did not start'
-zombie_pid=$(cat "$WORK_DIR/zombie-pid")
-for ((attempt = 0; attempt < 100; attempt++)); do
-    IFS= read -r zombie_stat <"/proc/$zombie_pid/stat" || fail 'zombie fixture disappeared'
-    zombie_stat=${zombie_stat##*) }
-    [ "${zombie_stat%% *}" != Z ] || break
-    sleep 0.01
-done
-[ "${zombie_stat%% *}" = Z ] || fail 'fixture did not retain a zombie'
+start_keeper true
+wait_until 100 process_is_zombie "$zombie_pid" || fail 'fixture did not retain a zombie'
 assert_elapsed error 'zombie process' "$zombie_pid"
 : >"$KEEPER_RELEASE"
 wait "$KEEPER_PID"

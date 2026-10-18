@@ -1,23 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TEST_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-REPO_DIR=$(cd -- "$TEST_DIR/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 PIDS=()
-cleanup() {
+cleanup_hook() {
     local pid
     for pid in "${PIDS[@]}"; do
         kill -KILL "$pid" 2>/dev/null || true
         wait "$pid" 2>/dev/null || true
     done
-    command rm -rf -- "$WORK_DIR"
-}
-trap cleanup EXIT
-
-fail() {
-    printf 'FAIL: %s\n' "$*" >&2
-    exit 1
 }
 
 assert_alive() {

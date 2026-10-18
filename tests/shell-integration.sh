@@ -2,21 +2,8 @@
 # shellcheck disable=SC2016  # 引导文件中的变量必须原样写入
 set -euo pipefail
 
-TEST_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-REPO_DIR=$(cd -- "$TEST_DIR/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
-trap 'command rm -rf -- "$WORK_DIR"' EXIT
-
-fail() {
-    printf 'FAIL: %s\n' "$*" >&2
-    exit 1
-}
-
-assert_eq() {
-    local expected=$1 actual=$2 description=$3
-    [ "$expected" = "$actual" ] ||
-        fail "$description: expected [$expected], got [$actual]"
-}
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 
 CLASHCTL_HOME="$WORK_DIR/install home"
 CLASHCTL_SRC=$REPO_DIR

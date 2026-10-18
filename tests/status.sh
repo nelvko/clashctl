@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
 # 真实 Bash/Zsh/Fish 入口与伪终端；仅读取隔离配置，不接触宿主服务。
 set -euo pipefail
-REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
-trap 'rm -rf -- "$WORK_DIR"' EXIT
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 for tool in bash zsh fish python3; do
     command -v "$tool" >/dev/null || { printf '%s is required\n' "$tool" >&2; exit 1; }
 done
 export CLASHCTL_HOME="$WORK_DIR/home"
-mkdir -p "$CLASHCTL_HOME/"{scripts,bin,data} "$WORK_DIR/user"
-cp -r "$REPO_DIR/scripts/"{lib,cmd} "$CLASHCTL_HOME/scripts/"
-printf 'CLASHCTL_KERNEL=mihomo\nINIT_TYPE=nohup\n' >"$CLASHCTL_HOME/.env"
+make_fake_home "$CLASHCTL_HOME"
+mkdir -p "$WORK_DIR/user"
 
 cat >"$CLASHCTL_HOME/scripts/lib/zz-fixture.sh" <<'EOF'
 detect_service_manager() {

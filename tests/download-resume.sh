@@ -2,27 +2,13 @@
 # Exercise the real curl downloader against a local HTTP server; no external network.
 set -euo pipefail
 
-TEST_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-REPO_DIR=$(cd -- "$TEST_DIR/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 SERVER_PID=''
-cleanup() {
+cleanup_hook() {
     if [ -n "$SERVER_PID" ]; then
         kill "$SERVER_PID" 2>/dev/null || true
         wait "$SERVER_PID" 2>/dev/null || true
-    fi
-    /usr/bin/rm -rf -- "$WORK_DIR"
-}
-trap cleanup EXIT
-
-fail() {
-    printf 'FAIL: %s\n' "$*" >&2
-    exit 1
-}
-
-assert_absent() {
-    if [ -e "$1" ] || [ -L "$1" ]; then
-        fail "$2: still exists [$1]"
     fi
 }
 
@@ -79,7 +65,6 @@ cut = 16384
 counts = {}
 guard = threading.Lock()
 
-
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
@@ -130,7 +115,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.connection.close()
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
-
 
 server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
 server.daemon_threads = True

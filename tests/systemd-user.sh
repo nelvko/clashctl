@@ -5,10 +5,8 @@
 # shellcheck disable=SC2317,SC2154,SC2030
 set -euo pipefail
 
-REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
-trap 'command rm -rf -- "$WORK_DIR"' EXIT
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 
 export HOME="$WORK_DIR/user" XDG_CONFIG_HOME="$WORK_DIR/config"
 export CLASHCTL_HOME="$WORK_DIR/install" CLASHCTL_SRC="$REPO_DIR" CLASHCTL_KERNEL=mihomo

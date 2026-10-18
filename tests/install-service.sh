@@ -2,10 +2,8 @@
 # 服务方式选择只做能力探测；安装入口必须保留显式参数供初始化使用。
 # shellcheck disable=SC2317  # 安装器间接调用测试替身。
 set -euo pipefail
-REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
-trap 'rm -rf -- "$WORK_DIR"' EXIT
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 
 # shellcheck source=../install.sh
 . "$REPO_DIR/install.sh"
@@ -73,15 +71,10 @@ done
 )
 
 # 使用真正的控制终端验证 /dev/tty 输入；每个子进程最多等待 5 秒。
-python3 - "$REPO_DIR/install.sh" <<'PY'
-import errno
-import os
-import pty
-import select
-import signal
+python3 -B - "$REPO_DIR/install.sh" "$TEST_DIR/lib" <<'PY'
 import sys
-import time
-
+sys.path.insert(0, sys.argv[2])
+from terminal import run
 script = '''set -eu
 . "$1"
 unset CI
@@ -96,36 +89,11 @@ _install_select_service auto ''
 printf '\\nSELECTED:%s\\n' "$_INSTALL_SELECTED_SERVICE"
 '''
 for replies, expected in ((b"2\n", b"nohup"), (b"invalid\n\n", b"systemd-user")):
-    pid, fd = pty.fork()
-    if pid == 0:
-        os.execvp("bash", ["bash", "-c", script, "_", sys.argv[1]])
-    output, sent, deadline = b"", False, time.monotonic() + 5
-    try:
-        while b"SELECTED:" + expected not in output:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0 or not select.select([fd], [], [], max(0, remaining))[0]:
-                raise RuntimeError("interactive selection timed out: " + repr(output))
-            try:
-                chunk = os.read(fd, 8192)
-            except OSError as error:
-                if error.errno != errno.EIO:
-                    raise
-                chunk = b""
-            if not chunk:
-                raise RuntimeError("interactive selection exited without result: " + repr(output))
-            output += chunk
-            if not sent and b"[1/2" in output:
-                os.write(fd, replies)
-                sent = True
-        if replies.startswith(b"invalid") and "请输入 1 或 2".encode() not in output:
-            raise RuntimeError("interactive selection omitted invalid-input prompt")
-    finally:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        os.waitpid(pid, 0)
-        os.close(fd)
+    rc, output = run(["bash", "-c", script, "_", sys.argv[1]],
+                     replies=[(b"[1/2", replies)], timeout=5)
+    assert rc == 0 and b"SELECTED:" + expected in output, (rc, output)
+    if replies.startswith(b"invalid"):
+        assert "请输入 1 或 2".encode() in output, output
 PY
 
 # 对入口使用未完成的本地安装替身；不下载、不操作宿主服务与 Shell 配置。
@@ -289,22 +257,11 @@ grep -Fqx 'INIT_TYPE=nohup' "$CASE_DIR/.env" || fail 'new service conflict chang
 cat >"$WORK_DIR/preflight.fixture" <<'FIXTURE'
 INIT_TYPE='' service_manager=''
 [ ! -f "$CLASHCTL_HOME/.env" ] || . "$CLASHCTL_HOME/.env"
-CLASH_DATA_DIR="$CLASHCTL_HOME/data"
-CLASH_PROFILES_DIR="$CLASH_DATA_DIR/profiles"
-CLASH_RESOURCES_DIR="$CLASHCTL_HOME/resources"
-CLASH_CONFIG_BASE="$CLASH_DATA_DIR/config.yaml"
-CLASH_CONFIG_MIXIN="$CLASH_DATA_DIR/mixin.yaml"
+FIXTURE
+cat "$TEST_DIR/lib/preflight.fixture" >>"$WORK_DIR/preflight.fixture"
+cat >>"$WORK_DIR/preflight.fixture" <<'FIXTURE'
 CLASH_CONFIG_RUNTIME="$CLASH_DATA_DIR/runtime.yaml"
 CLASHCTL_DOWNLOAD_TIMEOUT=${CLASHCTL_DOWNLOAD_TIMEOUT:-60}
-BIN_YQ=fixture_yq
-fixture_yq() {
-    case "$1" in
-    '.mode // "rule"')
-        if [ -s "$CLASH_CONFIG_BASE" ]; then printf 'rule\n'; else printf 'direct\n'; fi
-        ;;
-    *) printf 'existing-secret\n' ;;
-    esac
-}
 bin_kernel_path() { printf '%s/bin/mihomo\n' "$CLASHCTL_HOME"; }
 _is_root() { return 1; }
 service_user_available() { [ "$USER_MANAGER_AVAILABLE" -eq 1 ]; }
@@ -313,10 +270,8 @@ detect_service_manager() {
     INIT_TYPE=${INIT_TYPE:-nohup}
     service_manager=$INIT_TYPE
 }
-_service_check_conflict() { :; }
 _service_privileged_marker_exists() { return 1; }
 operation_lock_acquire() { :; }
-valid_required() { :; }
 prepare_zip() { :; }
 _set_env() {
     sed -i "/^$1=/d" "$CLASHCTL_HOME/.env"

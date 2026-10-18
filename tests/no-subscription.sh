@@ -2,10 +2,8 @@
 # 无订阅时能用默认直连配置运行；订阅、Mixin 错误不能覆盖有效运行配置。
 set -euo pipefail
 
-REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
-trap 'command rm -rf -- "$WORK_DIR"' EXIT
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 
 # 测试不下载依赖；CI 安装固定版本，本地可通过 TEST_YQ 指定 MikeFarah yq v4。
 TEST_YQ=${TEST_YQ:-$(command -v yq || true)}

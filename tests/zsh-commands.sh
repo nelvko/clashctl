@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 # 用真实 Zsh 检查 node/sub；仅替换 API、yq 数据读取和订阅落盘。
 set -euo pipefail
-REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
-trap 'rm -rf -- "$WORK_DIR"' EXIT
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 command -v zsh >/dev/null || { printf 'zsh is required\n' >&2; exit 1; }
-mkdir -p "$WORK_DIR/home/scripts" "$WORK_DIR/home/data/profiles" "$WORK_DIR/home/resources" "$WORK_DIR/bin"
-cp -r "$REPO_DIR/scripts/"{lib,cmd} "$WORK_DIR/home/scripts/"
-printf 'CLASHCTL_KERNEL=mihomo\nINIT_TYPE=nohup\n' >"$WORK_DIR/home/.env"
+make_fake_home "$WORK_DIR/home"
+mkdir -p "$WORK_DIR/home/data/profiles" "$WORK_DIR/home/resources" "$WORK_DIR/bin"
 printf 'fixture subscription\n' >"$WORK_DIR/home/data/saved.yaml"
 
 # 保留真实数组、URL 编码、curl 封装、编号/fzf 选择、临时文件和锁操作。

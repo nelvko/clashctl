@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # 本地程序与真实 gzip 走实际安装流程；网络仅用受控命令桩。
 set -euo pipefail
-REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
-trap 'rm -rf -- "$WORK_DIR"' EXIT
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 export CLASHCTL_HOME="$WORK_DIR/bootstrap" CLASHCTL_SRC=$REPO_DIR CLASHCTL_KERNEL=mihomo CLASHCTL_COLOR=never
 mkdir -p "$CLASHCTL_HOME"
 # shellcheck source=../scripts/preflight.sh

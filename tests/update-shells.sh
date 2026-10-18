@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # 真实 Bash/Zsh 加载器与 Git/压缩包更新；只有下载来源替换成本地 fixture。
 set -euo pipefail
-REPO_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-WORK_DIR=$(mktemp -d)
-trap 'rm -rf -- "$WORK_DIR"' EXIT
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+# shellcheck source=lib/common.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 command -v zsh >/dev/null || fail 'zsh is required'
 export REAL_GIT SOURCE_REPO="$WORK_DIR/source" SOURCE_ARCHIVE="$WORK_DIR/source.tar.gz"
 REAL_GIT=$(command -v git)
@@ -12,11 +10,7 @@ mkdir -p "$SOURCE_REPO" "$WORK_DIR/bin"
 cp -a "$REPO_DIR/scripts" "$SOURCE_REPO/"
 cp "$REPO_DIR/"{install.sh,uninstall.sh,.env.example,.gitignore} "$SOURCE_REPO/"
 printf 'CLASHCTL_TEST_VERSION=old\n' >"$SOURCE_REPO/scripts/cmd/version.sh"
-"$REAL_GIT" -C "$SOURCE_REPO" init -q -b master
-"$REAL_GIT" -C "$SOURCE_REPO" config user.email test@example.invalid
-"$REAL_GIT" -C "$SOURCE_REPO" config user.name test
-"$REAL_GIT" -C "$SOURCE_REPO" add .
-"$REAL_GIT" -C "$SOURCE_REPO" commit -qm initial
+init_fixture_repo "$SOURCE_REPO"
 INITIAL_HEAD=$("$REAL_GIT" -C "$SOURCE_REPO" rev-parse HEAD)
 . "$REPO_DIR/install.sh"
 for shell in bash zsh; do
