@@ -94,42 +94,18 @@ _status_format_uptime() {
 }
 
 _status_tun_label() {
-    local kernel_state=$1 pid=$2 api_state='' enabled='' device='' link ownership=2 link_rc=0
+    local kernel_state=$1 pid=$2 rc=0
     case $kernel_state in
     stopped | failed) printf '关闭\n'; return ;;
     running) ;;
     *) printf '无法检测\n'; return ;;
     esac
-    if api_state=$(_tun_api_state 2>/dev/null); then
-        IFS=$'\t' read -r enabled device <<<"$api_state"
-        [ "$enabled" != false ] || { printf '关闭\n'; return; }
-    fi
-    if [ -z "$device" ]; then
-        device=$("$BIN_YQ" '.tun.device // "Meta"' "$CLASH_CONFIG_RUNTIME" 2>/dev/null) || device=''
-    fi
-    [ -n "$device" ] || device=Meta
-    # 网卡名和查询结果只作为终端文字显示，不接收控制字符。
-    if [[ $device == *[[:cntrl:]]* ]] || ! command -v ip >/dev/null 2>&1; then
-        printf '无法检测\n'
-        return
-    fi
-    link=$(ip -o link show dev "$device" 2>/dev/null) || link_rc=$?
-    if [ "$link_rc" -ne 0 ] || [[ ! $link =~ \<([^\>]*,)?UP(,[^\>]*)?\> ]]; then
-        if [ "$enabled" = true ] && [ "$link_rc" -le 1 ]; then printf '关闭\n'; else printf '无法检测\n'; fi
-        return
-    fi
-    if [[ $pid =~ ^[0-9]+$ ]]; then
-        ownership=0
-        _tun_pid_owns_device "$pid" "$device" 2>/dev/null || ownership=$?
-    fi
-    if [ "$ownership" -eq 0 ] ||
-        { [ "$ownership" -eq 2 ] && ! _is_root && [ "$enabled" = true ] && [[ $link == *LOWER_UP* && $link != *NO-CARRIER* ]]; }; then
-        printf '已启用（%s）\n' "$device"
-    elif [ "$ownership" -eq 1 ] && [ "$enabled" = true ]; then
-        printf '关闭\n'
-    else
-        printf '无法检测\n'
-    fi
+    _tun_probe "$pid" 2>/dev/null || rc=$?
+    case $rc in
+    0) printf '已启用（%s）\n' "$_TUN_DEVICE" ;;
+    1) printf '关闭\n' ;;
+    *) printf '无法检测\n' ;;
+    esac
 }
 
 _status_dashboard_url() {

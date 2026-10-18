@@ -3,7 +3,7 @@
 _SERVICE_PROCESS_HELPER_FILE=$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null) ||
     _SERVICE_PROCESS_HELPER_FILE=${BASH_SOURCE[0]}
 
-_service_process_starttime() {
+_service_process_stat() {
     local pid=$1 stat rest
     local -a fields=()
     { IFS= read -r stat <"/proc/${pid}/stat"; } 2>/dev/null || return 1
@@ -12,7 +12,13 @@ _service_process_starttime() {
     read -r -a fields <<<"$rest"
     [ "${#fields[@]}" -ge 20 ] || return 1
     case ${fields[19]} in '' | *[!0-9]*) return 1 ;; esac
-    printf '%s\n' "${fields[19]}"
+    _SERVICE_PROCESS_STATE=${fields[0]}
+    _SERVICE_PROCESS_STARTTIME=${fields[19]}
+}
+
+_service_process_starttime() {
+    _service_process_stat "$1" || return 1
+    printf '%s\n' "$_SERVICE_PROCESS_STARTTIME"
 }
 
 _service_process_argv_hex() {
@@ -157,41 +163,31 @@ _service_process_lock_release() {
     [ "${_SERVICE_PROCESS_LOCK_PATH:-}" != "$lock" ] || unset _SERVICE_PROCESS_LOCK_PATH
 }
 
+# 调用方先准备记录目录；锁覆盖整次读写，释放失败也视为操作失败。
+_service_process_with_lock() {
+    local record=$1 lock rc=0
+    shift
+    _service_process_lock_acquire "$record" || return 1
+    lock=$_SERVICE_PROCESS_LOCK_PATH
+    "$@" || rc=$?
+    _service_process_lock_release "$lock" || rc=1
+    return "$rc"
+}
+
 _service_process_record_load() {
     local record=$1 key value
     local version='' pid='' starttime='' argv='' exe_id='' count=0
-    local seen_version=0 seen_pid=0 seen_starttime=0 seen_argv=0 seen_exe_id=0
     unset _SERVICE_RECORD_PID _SERVICE_RECORD_STARTTIME _SERVICE_RECORD_ARGV _SERVICE_RECORD_EXE_ID
     [ -f "$record" ] && [ ! -L "$record" ] || return 1
 
     while IFS='=' read -r key value; do
         count=$((count + 1))
         case $key in
-        version)
-            [ "$seen_version" -eq 0 ] || return 1
-            seen_version=1
-            version=$value
-            ;;
-        pid)
-            [ "$seen_pid" -eq 0 ] || return 1
-            seen_pid=1
-            pid=$value
-            ;;
-        starttime)
-            [ "$seen_starttime" -eq 0 ] || return 1
-            seen_starttime=1
-            starttime=$value
-            ;;
-        argv)
-            [ "$seen_argv" -eq 0 ] || return 1
-            seen_argv=1
-            argv=$value
-            ;;
-        exe_id)
-            [ "$seen_exe_id" -eq 0 ] || return 1
-            seen_exe_id=1
-            exe_id=$value
-            ;;
+        version) version=$value ;;
+        pid) pid=$value ;;
+        starttime) starttime=$value ;;
+        argv) argv=$value ;;
+        exe_id) exe_id=$value ;;
         *) return 1 ;;
         esac
     done <"$record"
@@ -250,21 +246,10 @@ _service_process_stop_birth() {
     kill -KILL "$pid" 2>/dev/null || true
 }
 
-_service_process_record_has_identity() {
-    local record=$1 pid=$2 starttime=$3 argv=$4 exe_id=$5
-    _service_process_record_load "$record" || return 1
-    [ "$_SERVICE_RECORD_PID" = "$pid" ] &&
-        [ "$_SERVICE_RECORD_STARTTIME" = "$starttime" ] &&
-        [ "$_SERVICE_RECORD_ARGV" = "$argv" ] &&
-        [ "$_SERVICE_RECORD_EXE_ID" = "$exe_id" ]
-}
-
 _service_process_wait_stopped() {
-    local record=$1 pid=$2 starttime=$3 argv=$4 exe_id=$5 attempt=0
+    local attempt=0
     while [ "$attempt" -lt 20 ]; do
-        _service_process_record_has_identity \
-            "$record" "$pid" "$starttime" "$argv" "$exe_id" || return 2
-        _service_process_identity_matches "$pid" "$starttime" "$argv" "$exe_id" || return 0
+        _service_process_identity_matches "$@" || return 0
         attempt=$((attempt + 1))
         sleep 0.05
     done
@@ -272,7 +257,7 @@ _service_process_wait_stopped() {
 }
 
 _service_process_stop_recorded() {
-    local record=$1 pid starttime argv exe_id wait_rc=0
+    local record=$1 pid starttime argv exe_id signal
     _SERVICE_PROCESS_RECORD_CAN_REMOVE=0
     _service_process_record_load "$record" || return 1
     pid=$_SERVICE_RECORD_PID
@@ -284,48 +269,35 @@ _service_process_stop_recorded() {
         return 0
     fi
 
-    # Validate immediately before each signal. A reused PID never receives KILL.
-    _service_process_record_has_identity \
-        "$record" "$pid" "$starttime" "$argv" "$exe_id" || return 0
-    _service_process_identity_matches "$pid" "$starttime" "$argv" "$exe_id" || return 0
-    kill -TERM "$pid" 2>/dev/null || {
+    # 调用方持有记录锁；只需在每次信号前重查进程身份，防止 PID 复用。
+    for signal in TERM KILL; do
         if ! _service_process_identity_matches "$pid" "$starttime" "$argv" "$exe_id"; then
-            _service_process_record_has_identity \
-                "$record" "$pid" "$starttime" "$argv" "$exe_id" &&
-                _SERVICE_PROCESS_RECORD_CAN_REMOVE=1
+            [ "$signal" != KILL ] || _SERVICE_PROCESS_RECORD_CAN_REMOVE=1
             return 0
         fi
-        return 1
-    }
-    _service_process_wait_stopped \
-        "$record" "$pid" "$starttime" "$argv" "$exe_id" || wait_rc=$?
-    if [ "$wait_rc" -eq 0 ]; then
-        _SERVICE_PROCESS_RECORD_CAN_REMOVE=1
-        return 0
-    fi
-    [ "$wait_rc" -ne 2 ] || return 0
-
-    _service_process_record_has_identity \
-        "$record" "$pid" "$starttime" "$argv" "$exe_id" || return 0
-    _service_process_identity_matches "$pid" "$starttime" "$argv" "$exe_id" || {
-        _SERVICE_PROCESS_RECORD_CAN_REMOVE=1
-        return 0
-    }
-    kill -KILL "$pid" 2>/dev/null || {
-        _service_process_identity_matches "$pid" "$starttime" "$argv" "$exe_id" || {
+        if ! kill -"$signal" "$pid" 2>/dev/null; then
+            _service_process_identity_matches "$pid" "$starttime" "$argv" "$exe_id" && return 1
             _SERVICE_PROCESS_RECORD_CAN_REMOVE=1
             return 0
-        }
-        return 1
-    }
-    wait_rc=0
-    _service_process_wait_stopped \
-        "$record" "$pid" "$starttime" "$argv" "$exe_id" || wait_rc=$?
-    if [ "$wait_rc" -eq 0 ]; then
-        _SERVICE_PROCESS_RECORD_CAN_REMOVE=1
-        return 0
+        fi
+        if _service_process_wait_stopped "$pid" "$starttime" "$argv" "$exe_id"; then
+            _SERVICE_PROCESS_RECORD_CAN_REMOVE=1
+            return 0
+        fi
+    done
+    return 1
+}
+
+_service_process_start_failed() {
+    local record=$1 pid=$2
+    if [ "${_SERVICE_SNAPSHOT_PID:-}" = "$pid" ]; then
+        _service_process_stop_snapshot \
+            "$pid" "$_SERVICE_SNAPSHOT_STARTTIME" \
+            "$_SERVICE_SNAPSHOT_ARGV" "$_SERVICE_SNAPSHOT_EXE_ID"
+    elif [ "${_SERVICE_PROCESS_BIRTH_PID:-}" = "$pid" ]; then
+        _service_process_stop_birth "$pid" "$_SERVICE_PROCESS_BIRTH_STARTTIME"
     fi
-    [ "$wait_rc" -eq 2 ] && return 0
+    command rm -f -- "$record"
     return 1
 }
 
@@ -378,66 +350,45 @@ _service_privileged_start_command_locked() {
         command rm -f -- "$record"
         return 1
     fi
-    if [ "${_SERVICE_SNAPSHOT_PID:-}" = "$pid" ]; then
-        _service_process_stop_snapshot \
-            "$pid" "$_SERVICE_SNAPSHOT_STARTTIME" \
-            "$_SERVICE_SNAPSHOT_ARGV" "$_SERVICE_SNAPSHOT_EXE_ID"
-    elif [ "${_SERVICE_PROCESS_BIRTH_PID:-}" = "$pid" ]; then
-        _service_process_stop_birth "$pid" "$_SERVICE_PROCESS_BIRTH_STARTTIME"
-    fi
-    command rm -f -- "$record"
-    return 1
-}
-
-_service_privileged_start_command_at() {
-    local runtime_dir=$1 owner_uid=$2 kernel=$3 expected_exe=$4
-    shift 4
-    local record lock rc=0
-    [ "$(id -u)" -eq 0 ] || return 1
-    _service_privileged_validate_key "$owner_uid" "$kernel" || return 1
-    if [ -e "$runtime_dir" ] || [ -L "$runtime_dir" ]; then
-        _service_privileged_runtime_is_secure "$runtime_dir" || return 1
-    else
-        /usr/bin/install -d -m 0755 -o 0 -g 0 -- "$runtime_dir" || return 1
-        _service_privileged_runtime_is_secure "$runtime_dir" || return 1
-    fi
-    record=$(_service_privileged_record_path "$runtime_dir" "$owner_uid" "$kernel") || return 1
-    _service_process_lock_acquire "$record" || return 1
-    lock=$_SERVICE_PROCESS_LOCK_PATH
-    _service_privileged_start_command_locked "$record" "$expected_exe" "$@" || rc=$?
-    _service_process_lock_release "$lock" || rc=1
-    return "$rc"
+    _service_process_start_failed "$record" "$pid"
 }
 
 _service_privileged_start_at() {
     local runtime_dir=$1 owner_uid=$2 kernel=$3 bin=$4 resources=$5 config=$6
-    _service_privileged_start_command_at \
-        "$runtime_dir" "$owner_uid" "$kernel" "$bin" \
-        "$bin" -d "$resources" -f "$config"
+    local record
+    [ "$(id -u)" -eq 0 ] || return 1
+    record=$(_service_privileged_record_path "$runtime_dir" "$owner_uid" "$kernel") || return 1
+    if [ ! -e "$runtime_dir" ] && [ ! -L "$runtime_dir" ]; then
+        /usr/bin/install -d -m 0755 -o 0 -g 0 -- "$runtime_dir" || return 1
+    fi
+    _service_privileged_runtime_is_secure "$runtime_dir" || return 1
+    _service_process_with_lock "$record" _service_privileged_start_command_locked \
+        "$record" "$bin" "$bin" -d "$resources" -f "$config"
 }
 
-_service_privileged_stop_at() {
-    local runtime_dir=$1 owner_uid=$2 kernel=$3 expected_argv=$4 record lock rc=0
-    [ "$(id -u)" -eq 0 ] || return 1
-    _service_privileged_validate_key "$owner_uid" "$kernel" || return 1
-    [ -e "$runtime_dir" ] || [ -L "$runtime_dir" ] || return 0
-    _service_privileged_runtime_is_secure "$runtime_dir" || return 1
-    record=$(_service_privileged_record_path "$runtime_dir" "$owner_uid" "$kernel") || return 1
-    _service_process_lock_acquire "$record" || return 1
-    lock=$_SERVICE_PROCESS_LOCK_PATH
+_service_privileged_stop_locked() {
+    local record=$1 expected_argv=$2
     if [ -e "$record" ] || [ -L "$record" ]; then
         # 同一用户可能存在多个安装；仅 UID 与内核名相同不足以授权停止。
         if ! _service_privileged_record_is_secure "$record" ||
             ! _service_process_record_load "$record" ||
             [ "$_SERVICE_RECORD_ARGV" != "$expected_argv" ] ||
             ! _service_process_stop_recorded "$record"; then
-            rc=1
+            return 1
         elif [ "${_SERVICE_PROCESS_RECORD_CAN_REMOVE:-0}" -ne 0 ]; then
-            command rm -f -- "$record" || rc=1
+            command rm -f -- "$record" || return 1
         fi
     fi
-    _service_process_lock_release "$lock" || rc=1
-    return "$rc"
+    return 0
+}
+
+_service_privileged_stop_at() {
+    local runtime_dir=$1 owner_uid=$2 kernel=$3 expected_argv=$4 record
+    [ "$(id -u)" -eq 0 ] || return 1
+    record=$(_service_privileged_record_path "$runtime_dir" "$owner_uid" "$kernel") || return 1
+    [ -e "$runtime_dir" ] || [ -L "$runtime_dir" ] || return 0
+    _service_privileged_runtime_is_secure "$runtime_dir" || return 1
+    _service_process_with_lock "$record" _service_privileged_stop_locked "$record" "$expected_argv"
 }
 
 _service_process_privileged_cli() {

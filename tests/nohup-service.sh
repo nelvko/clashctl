@@ -112,7 +112,6 @@ test_pid_identity_is_rechecked_before_term() {
             _SERVICE_RECORD_ARGV=00
             _SERVICE_RECORD_EXE_ID=1:1
         }
-        _service_process_record_has_identity() { return 0; }
         local_matches=0
         _service_process_identity_matches() {
             local_matches=$((local_matches + 1))
@@ -137,7 +136,6 @@ test_pid_identity_is_rechecked_before_kill() {
             _SERVICE_RECORD_ARGV=00
             _SERVICE_RECORD_EXE_ID=1:1
         }
-        _service_process_record_has_identity() { return 0; }
         identity_checks=0
         _service_process_identity_matches() {
             identity_checks=$((identity_checks + 1))
@@ -159,14 +157,44 @@ test_pid_identity_is_rechecked_before_kill() {
     fi
 }
 
+test_recorded_stop_failures() {
+    (
+        _service_process_record_load() {
+            _SERVICE_RECORD_PID=4242
+            _SERVICE_RECORD_STARTTIME=1
+            _SERVICE_RECORD_ARGV=00
+            _SERVICE_RECORD_EXE_ID=1:1
+        }
+        _service_process_identity_matches() { return 0; }
+        sleep() { :; }
+        signals=''
+        kill_rc=1
+        kill() { signals+=" $1"; return "$kill_rc"; }
+        if _service_process_stop_recorded "$WORK_DIR/synthetic.record"; then
+            fail 'a failed TERM was reported as stopped'
+        fi
+        [ "$signals" = ' -TERM' ] || fail 'failed TERM escalated to KILL'
+        [ "$_SERVICE_PROCESS_RECORD_CAN_REMOVE" -eq 0 ] || fail 'failed TERM allowed record removal'
+
+        signals=''
+        kill_rc=0
+        if _service_process_stop_recorded "$WORK_DIR/synthetic.record"; then
+            fail 'a surviving process was reported as stopped'
+        fi
+        [ "$signals" = ' -TERM -KILL' ] || fail 'surviving process did not receive TERM then KILL'
+        [ "$_SERVICE_PROCESS_RECORD_CAN_REMOVE" -eq 0 ] || fail 'surviving process allowed record removal'
+    )
+}
+
 test_privileged_record_is_root_owned_and_authoritative() {
-    local runtime_dir="$WORK_DIR/root-runtime" privileged_bin="$WORK_DIR/privileged-mihomo"
+    local runtime_dir="$WORK_DIR/root-runtime" privileged_bin resources="$WORK_DIR/privileged.py"
+    local config="$WORK_DIR/privileged.yaml"
     local record privileged_pid unrecorded_pid expected_argv local_pidfile="$WORK_DIR/user.pid"
-    expected_argv=$(_service_process_values_argv_hex "$privileged_bin" 30)
-    cp -- "$(command -v yes)" "$privileged_bin"
-    chmod 0700 "$privileged_bin"
-    _service_privileged_start_command_at \
-        "$runtime_dir" 1000 mihomo "$privileged_bin" "$privileged_bin" 30 \
+    privileged_bin=$(command -v python3)
+    printf 'import time\ntime.sleep(30)\n' >"$resources"
+    expected_argv=$(_service_process_values_argv_hex "$privileged_bin" -d "$resources" -f "$config")
+    _service_privileged_start_at \
+        "$runtime_dir" 1000 mihomo "$privileged_bin" "$resources" "$config" \
         >/dev/null || fail 'privileged helper could not start its recorded process'
     record=$(_service_privileged_record_path "$runtime_dir" 1000 mihomo)
     [ "$(stat -c '%u:%g:%a' -- "$record")" = 0:0:600 ] ||
@@ -176,7 +204,7 @@ test_privileged_record_is_root_owned_and_authoritative() {
     privileged_pid=$_SERVICE_RECORD_PID
     PIDS+=("$privileged_pid")
 
-    "$privileged_bin" 30 >/dev/null &
+    "$privileged_bin" -d "$resources" -f "$config" >/dev/null &
     unrecorded_pid=$!
     PIDS+=("$unrecorded_pid")
     printf '%s\n' "$unrecorded_pid" >"$local_pidfile"
@@ -218,6 +246,7 @@ test_stale_process_lock_is_recovered() {
 test_exact_record_and_atomic_binary_replacement
 test_pid_identity_is_rechecked_before_term
 test_pid_identity_is_rechecked_before_kill
+test_recorded_stop_failures
 test_privileged_record_is_root_owned_and_authoritative
 test_stale_process_lock_is_recovered
 

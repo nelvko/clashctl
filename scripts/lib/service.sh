@@ -69,20 +69,13 @@ service_main_pid() {
 }
 
 _service_uptime_process_ticks() {
-    local stat rest
-    local -a fields=()
-    { IFS= read -r stat <"/proc/$1/stat"; } 2>/dev/null || return 1
-    rest=${stat##*) }
-    [ "$rest" != "$stat" ] || return 1
-    read -r -a fields <<<"$rest"
-    [ "${#fields[@]}" -ge 20 ] || return 1
-    case ${fields[0]} in
+    _service_process_stat "$1" || return 1
+    case $_SERVICE_PROCESS_STATE in
     Z | X | x) return 1 ;;
     [a-zA-Z]) ;;
     *) return 1 ;;
     esac
-    case ${fields[19]} in '' | *[!0-9]*) return 1 ;; esac
-    printf '%s\n' "${fields[19]}"
+    printf '%s\n' "$_SERVICE_PROCESS_STARTTIME"
 }
 
 _service_uptime_clock() {
@@ -209,17 +202,8 @@ _service_nohup_start_locked() {
     pid=$!
     _service_process_record_create \
         "$service_pid_path" "$pid" "$BIN_KERNEL" \
-        "$BIN_KERNEL" -d "$CLASH_RESOURCES_DIR" -f "$CLASH_CONFIG_RUNTIME" || {
-        if [ "${_SERVICE_SNAPSHOT_PID:-}" = "$pid" ]; then
-            _service_process_stop_snapshot \
-                "$pid" "$_SERVICE_SNAPSHOT_STARTTIME" \
-                "$_SERVICE_SNAPSHOT_ARGV" "$_SERVICE_SNAPSHOT_EXE_ID"
-        elif [ "${_SERVICE_PROCESS_BIRTH_PID:-}" = "$pid" ]; then
-            _service_process_stop_birth "$pid" "$_SERVICE_PROCESS_BIRTH_STARTTIME"
-        fi
-        command rm -f -- "$service_pid_path"
-        return 1
-    }
+        "$BIN_KERNEL" -d "$CLASH_RESOURCES_DIR" -f "$CLASH_CONFIG_RUNTIME" ||
+        _service_process_start_failed "$service_pid_path" "$pid"
 }
 
 _service_nohup_stop_locked() {
@@ -264,13 +248,9 @@ service_start() {
                 return
             fi
         fi
-        local lock rc=0
         /usr/bin/install -d "$(dirname -- "$service_pid_path")" || return 1
-        _service_process_lock_acquire "$service_pid_path" || return 1
-        lock=$_SERVICE_PROCESS_LOCK_PATH
-        _service_nohup_start_locked || rc=$?
-        _service_process_lock_release "$lock" || rc=1
-        return "$rc"
+        _service_process_with_lock "$service_pid_path" _service_nohup_start_locked
+        return
         ;;
     esac
     _service_run_without_operation_lock _service_ctl start
@@ -331,13 +311,8 @@ service_stop() {
         _service_ctl stop
         ;;
     *)
-        local lock rc=0
         /usr/bin/install -d "$(dirname -- "$service_pid_path")" || return 1
-        _service_process_lock_acquire "$service_pid_path" || return 1
-        lock=$_SERVICE_PROCESS_LOCK_PATH
-        _service_nohup_stop_locked || rc=$?
-        _service_process_lock_release "$lock" || rc=1
-        return "$rc"
+        _service_process_with_lock "$service_pid_path" _service_nohup_stop_locked
         ;;
     esac
 }
@@ -428,7 +403,7 @@ _service_state_path_absent() {
 }
 
 _service_record_state() {
-    local record=$1 current expected_argv stat rest
+    local record=$1 current expected_argv
     if _service_state_path_absent "$record"; then
         printf 'stopped\n'
         return 0
@@ -446,12 +421,9 @@ _service_record_state() {
         printf 'stopped\n'
         return 0
     fi
-    current=$(_service_process_starttime "$_SERVICE_RECORD_PID") || return 1
-    if [ "$current" = "$_SERVICE_RECORD_STARTTIME" ]; then
-        { IFS= read -r stat <"/proc/$_SERVICE_RECORD_PID/stat"; } 2>/dev/null || return 1
-        rest=${stat##*) }
-        [ "$rest" != "$stat" ] || return 1
-        case ${rest%% *} in
+    _service_process_stat "$_SERVICE_RECORD_PID" || return 1
+    if [ "$_SERVICE_PROCESS_STARTTIME" = "$_SERVICE_RECORD_STARTTIME" ]; then
+        case $_SERVICE_PROCESS_STATE in
         Z | X) printf 'stopped\n'; return 0 ;;
         esac
         current=$(_service_process_argv_hex "$_SERVICE_RECORD_PID") || return 1
@@ -614,8 +586,6 @@ service_log_location() {
 }
 
 _service_target() {
-    detect_service_manager
-
     case "$service_manager" in
     systemd-user)
         printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/${CLASHCTL_KERNEL}.service"
@@ -681,7 +651,6 @@ _service_definition_is_owned() {
 # 不接管外部同名服务；用户先自行处理冲突。
 _service_check_conflict() {
     local target fragment
-    detect_service_manager
     target=$(_service_target) || return 0
     if [ -e "$target" ] || [ -L "$target" ]; then
         [ ! -L "$target" ] && _service_definition_is_owned "$target" && return 0

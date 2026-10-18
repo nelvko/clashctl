@@ -165,7 +165,7 @@ assert_state running 'nohup matching process'
 kill -0 "$CHILD_PID" || fail 'status stopped the recorded process'
 (
     _service_process_record_matches_loaded() { return 1; }
-    _service_process_starttime() { return 1; }
+    _service_process_stat() { return 1; }
     assert_state unknown 'nohup process permission failure'
 )
 BIN_KERNEL="$WORK_DIR/another-install/mihomo" assert_state unknown 'nohup foreign command record'

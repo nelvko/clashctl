@@ -27,12 +27,11 @@ clashtun() {
 }
 
 tunoff() {
+    detect_service_manager
     if ! tunstatus >/dev/null; then
         # 用户单元会跳过 TUN 配置；helper 已退出时也必须允许清除配置。
-        detect_service_manager
         [ "${service_manager:-}" = systemd-user ] && _is_tun_enabled || return 0
     fi
-    detect_service_manager
     if [ "${service_manager:-}" = systemd-user ]; then
         # 用户后端会同时停止 unit 与仍存在的 helper；没有 helper 时无需 sudo。
         service_stop >/dev/null || return 1
@@ -57,17 +56,14 @@ tunon() {
     _merge_config || return 1
     service_sudo_start || _errorcat 'Tun 模式开启失败' || return
     sleep 1
-    tunstatus >&/dev/null || {
-        [ "$CLASHCTL_KERNEL" = 'mihomo' ] && {
-            "$BIN_YQ" -i '.tun.auto-redirect = false' "$CLASH_CONFIG_MIXIN" || return 1
-            _merge_config || return 1
-            service_sudo_stop || return 1
-            service_sudo_start || return 1
-            sleep 1
-            tunstatus >&/dev/null || _errorcat 'Tun 模式开启失败, 请检查代理内核日志' || return
-            _okcat "Tun 模式已开启" && return 0
-        }
-    }
+    if ! tunstatus >&/dev/null && [ "$CLASHCTL_KERNEL" = mihomo ]; then
+        "$BIN_YQ" -i '.tun.auto-redirect = false' "$CLASH_CONFIG_MIXIN" || return 1
+        _merge_config || return 1
+        service_sudo_stop || return 1
+        service_sudo_start || return 1
+        sleep 1
+        tunstatus >&/dev/null || _errorcat 'Tun 模式开启失败, 请检查代理内核日志' || return
+    fi
     _okcat "Tun 模式已开启"
 }
 
