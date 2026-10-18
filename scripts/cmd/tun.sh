@@ -56,7 +56,7 @@ tunon() {
     _merge_config || return 1
     service_sudo_start || _errorcat 'Tun 模式开启失败' || return
     sleep 1
-    if ! tunstatus >&/dev/null && [ "$CLASHCTL_KERNEL" = mihomo ]; then
+    if ! tunstatus >&/dev/null; then
         "$BIN_YQ" -i '.tun.auto-redirect = false' "$CLASH_CONFIG_MIXIN" || return 1
         _merge_config || return 1
         service_sudo_stop || return 1

@@ -22,37 +22,32 @@ _operation_lock_emit_detail() {
     fi
 }
 
-# GNU/Linux and BSD/macOS spell permission/link-count formats differently.
 _operation_lock_stat() {
-    local format=$1 path=$2 bsd_format
-    stat -c "$format" -- "$path" 2>/dev/null && return 0
-    bsd_format=${format//%a/%Lp}
-    bsd_format=${bsd_format//%h/%l}
-    stat -f "$bsd_format" "$path" 2>/dev/null
+    stat -c "$1" -- "$2" 2>/dev/null
 }
 
 _operation_lock_validate_base() {
-    local base=$1 expected_owner=$2 mode owner
+    local base=$1 expected_owner=$2 metadata mode
     [ -n "$base" ] && [ "$base" != / ] && [[ $base == /* ]] || return 1
     ! [[ $base =~ [[:cntrl:]] ]] || return 1
     [ -d "$base" ] && [ ! -L "$base" ] && [ -x "$base" ] && [ -w "$base" ] || return 1
-    owner=$(_operation_lock_stat %u "$base") || return 1
-    mode=$(_operation_lock_stat %a "$base") || return 1
-    case $owner:$mode in
+    metadata=$(_operation_lock_stat '%u:%a' "$base") || return 1
+    case $metadata in
     *[!0-9:]* | :* | *:) return 1 ;;
     esac
-    [ "$owner" -eq "$expected_owner" ] && [ $((8#$mode & 0022)) -eq 0 ]
+    mode=${metadata#*:}
+    [ "${metadata%%:*}" -eq "$expected_owner" ] && [ $((8#$mode & 0022)) -eq 0 ]
 }
 
 _operation_lock_validate_tmp() {
-    local base=${1:-/tmp} mode owner
+    local base=${1:-/tmp} metadata mode
     [ -d "$base" ] && [ ! -L "$base" ] && [ -x "$base" ] && [ -w "$base" ] || return 1
-    owner=$(_operation_lock_stat %u "$base") || return 1
-    mode=$(_operation_lock_stat %a "$base") || return 1
-    case $owner:$mode in
+    metadata=$(_operation_lock_stat '%u:%a' "$base") || return 1
+    case $metadata in
     *[!0-9:]* | :* | *:) return 1 ;;
     esac
-    [ "$owner" -eq 0 ] && [ $((8#$mode & 0002)) -ne 0 ] &&
+    mode=${metadata#*:}
+    [ "${metadata%%:*}" -eq 0 ] && [ $((8#$mode & 0002)) -ne 0 ] &&
         [ $((8#$mode & 01000)) -ne 0 ]
 }
 
@@ -62,8 +57,6 @@ _operation_lock_base() {
         printf '/run\n'
         return 0
     fi
-    # macOS /tmp is a symlink to /private/tmp. Resolve it with the shell instead
-    # of depending on GNU readlink or a Linux-specific runtime directory.
     base=$(cd -P -- /tmp && pwd -P) || return 1
     _operation_lock_validate_tmp "$base" || return 1
     printf '%s\n' "$base"
@@ -199,7 +192,6 @@ operation_lock_acquire() {
         unset CLASHCTL_OPERATION_LOCK_DIR
         return 1
     fi
-    CLASHCTL_OPERATION_LOCK_DIR=$directory
     CLASHCTL_OPERATION_LOCK_PID=$_DIRECTORY_LOCK_PID
     CLASHCTL_OPERATION_LOCK_TOKEN=$_DIRECTORY_LOCK_TOKEN
     export -n CLASHCTL_OPERATION_LOCK_DIR CLASHCTL_OPERATION_LOCK_PID CLASHCTL_OPERATION_LOCK_TOKEN

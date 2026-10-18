@@ -148,15 +148,6 @@ for hint in 准备组件 使用系统版本 已跳过; do
     assert_contains "$stderr_file" "$hint" 'progress and hints go to stderr'
 done
 
-_okcat '🎉' '处理完成' >"$stdout_file" 2>"$stderr_file"
-assert_contains "$stdout_file" '处理完成' 'legacy success content'
-assert_empty "$stderr_file" 'legacy success wrote to stderr'
-rc=0
-_failcat '🍂' '处理失败' >"$stdout_file" 2>"$stderr_file" || rc=$?
-assert_eq 1 "$rc" 'legacy failure return code'
-assert_empty "$stdout_file" 'legacy failure wrote to stdout'
-assert_contains "$stderr_file" '处理失败' 'legacy failure content'
-
 export BIN_YQ=fake_yq
 export CLASH_CONFIG_RUNTIME="$WORK_DIR/runtime.yaml"
 fake_yq() {

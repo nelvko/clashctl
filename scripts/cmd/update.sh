@@ -36,15 +36,10 @@ _update_scripts() (
     trap 'exit 143' TERM
     trap 'exit 129' HUP
     operation_lock_acquire || return 1
-    [ -f "$CLASHCTL_HOME/.env" ] || { _ui_error '未找到安装配置'; return 1; }
+    [ -f "$CLASHCTL_HOME/.env" ] || [ "${CLASHCTL_INSTALL_RUNNING:-}" = 1 ] || { _ui_error '未找到安装配置'; return 1; }
     # 复用安装入口中的源码下载与检查，不执行初始化。
     # shellcheck source=/dev/null  # 只加载函数，安装入口有执行保护。
-    install_source=${CLASHCTL_INSTALL_LOCK_LIB:-}
-    if [ -n "$install_source" ]; then
-        install_source=${install_source%/scripts/lib/operation-lock.sh}
-    else
-        install_source=$CLASHCTL_HOME
-    fi
+    install_source=${CLASHCTL_INSTALL_SOURCE:-$CLASHCTL_HOME}
     # shellcheck source=/dev/null
     . "$install_source/install.sh" || return 1
     method=$(_install_method "$(cd -- "$CLASHCTL_HOME" && pwd -P)") || {

@@ -30,4 +30,4 @@ jobs:
       - name: Run regression suite
         run: sudo bash tests/run-all.sh
       - name: Run installation and service tests as a regular user
-        run: bash tests/run-all.sh install-update install-legacy-nohup install-service systemd-user no-subscription
+        run: bash tests/run-all.sh install-update install-service systemd-user no-subscription

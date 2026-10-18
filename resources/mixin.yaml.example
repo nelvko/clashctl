@@ -38,8 +38,7 @@ tun:
   device: clashctl
   stack: system
   auto-route: true
-  auto-redir: true # clash
-  auto-redirect: true # mihomo
+  auto-redirect: true
   auto-detect-interface: true
   dns-hijack:
     - any:53

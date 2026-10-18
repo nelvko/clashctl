@@ -133,16 +133,11 @@ cp "$owned_rc" "$WORK_DIR/incomplete.expected"
 _remove_source_block "$owned_rc"
 cmp "$owned_rc" "$WORK_DIR/incomplete.expected" || fail 'uninstall changed incomplete markers'
 
-# 旧版引导只有在相邻 export 指向当前目录时才删除。
-{
-    printf 'export CLASHCTL_HOME=%s\n' "$CLASHCTL_HOME"
-    printf '%s\n' '. $CLASHCTL_HOME/scripts/cmd/clashctl.sh'
-    printf 'export CLASHCTL_HOME=/another/install\n'
-    printf '%s\n' '[ -s "$CLASHCTL_HOME/scripts/cmd/clashctl.sh" ] && . "$CLASHCTL_HOME/scripts/cmd/clashctl.sh"'
-} >"$owned_rc"
-tail -n 2 "$owned_rc" >"$WORK_DIR/legacy.expected"
+# 不再识别旧裸引导行；未托管的用户内容原样保留。
+printf 'export CLASHCTL_HOME=%s\n. $CLASHCTL_HOME/scripts/cmd/clashctl.sh\n' "$CLASHCTL_HOME" >"$owned_rc"
+cp "$owned_rc" "$WORK_DIR/unmanaged.expected"
 _remove_source_block "$owned_rc"
-cmp "$owned_rc" "$WORK_DIR/legacy.expected" || fail 'legacy cleanup removed another installation loader'
+cmp "$owned_rc" "$WORK_DIR/unmanaged.expected" || fail 'unmanaged loader was changed'
 
 # Fish 托管头和安装路径必须同时匹配。
 detect_rc() {

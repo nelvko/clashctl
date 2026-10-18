@@ -43,7 +43,7 @@ _kernel_version() {
     kernel_info=${kernel_info%%$'\n'*}
     case $kernel_info in
     'Mihomo Meta '* | 'Clash Meta '*) kernel_version=${kernel_info#* Meta } ;;
-    'Mihomo '* | 'Clash '*) kernel_version=${kernel_info#* } ;;
+    'Mihomo '*) kernel_version=${kernel_info#* } ;;
     *) kernel_version='' ;;
     esac
     kernel_version=${kernel_version%% *}

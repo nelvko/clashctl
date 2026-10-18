@@ -359,29 +359,6 @@ test_contention_stress() {
     [ ! -e "$LOCK_DIR" ] || fail 'contention stress leaked lock'
 }
 
-test_bsd_stat_fallback() {
-    local real_stat bsd_called="$WORK_DIR/bsd-stat.called"
-    real_stat=$(command -v stat)
-    # shellcheck disable=SC2317  # Called indirectly by _operation_lock_stat.
-    stat() {
-        case ${1:-} in
-        -c) return 1 ;;
-        -f)
-            local format=$2 path=${!#}
-            format=${format//%Lp/%a}
-            format=${format//%l/%h}
-            : >"$bsd_called"
-            command "$real_stat" -c "$format" -- "$path"
-            ;;
-        *) command "$real_stat" "$@" ;;
-        esac
-    }
-    operation_lock_acquire || fail 'BSD stat fallback could not acquire lock'
-    operation_lock_release || fail 'BSD stat fallback could not release lock'
-    [ -f "$bsd_called" ] || fail 'BSD stat fallback was not exercised'
-    unset -f stat
-}
-
 test_nohup_daemon_does_not_retain_lock() {
     local fake_kernel="$WORK_DIR/fake-kernel" ready="$WORK_DIR/fake-kernel.ready"
     local daemon_pid='' attempt=0
@@ -497,7 +474,6 @@ test_unsafe_paths_are_rejected
 test_inherited_release_and_reacquisition
 test_release_requires_original_token
 test_contention_stress
-test_bsd_stat_fallback
 test_nohup_daemon_does_not_retain_lock
 test_sysv_background_child_cannot_release_parent_lock
 test_update_holds_lifecycle_lock_for_dispatch

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
 # 已安装时存在；install.sh 首跑物化前（依赖下载阶段）暂缺
-if [ -f "$CLASHCTL_SRC/.env" ]; then
-    . "$CLASHCTL_SRC/.env" || return 1
+if [ -f "$CLASHCTL_HOME/.env" ]; then
+    . "$CLASHCTL_HOME/.env" || return 1
 fi
 
 for lib_file in "$CLASHCTL_SRC"/scripts/lib/*.sh; do
@@ -48,7 +48,6 @@ prepare_zip() {
         [ "$item" != kernel ] || item=$CLASHCTL_KERNEL
         [ "$item" != mihomo ] || _mihomo_install_path_available || return 1
         if [ "$item" = mihomo ] && _managed_directory_is_safe "$BIN_BASE_DIR" &&
-            _managed_directory_is_safe "${BIN_KERNEL%/*}" &&
             _component_file_is_safe "$BIN_KERNEL" 755 &&
             kernel_version=$(_mihomo_binary_version "$BIN_KERNEL"); then
             _ui_ok "使用已安装的 mihomo $kernel_version"
@@ -116,12 +115,12 @@ _find_mihomo_archive() {
         [[ $name =~ ^mihomo-linux-(amd64(-v([123]))?|386|arm64|armv7)-(v[0-9]+\.[0-9]+\.[0-9]+)\.gz$ ]] || continue
         variant=${BASH_REMATCH[1]}
         rank=${BASH_REMATCH[3]:-1}
-        case "$arch:$variant" in
-        x86_64:amd64 | x86_64:amd64-v[123])
-            [ "$rank" -le "${level#v}" ] || continue ;;
-        i?86:386 | x86:386 | aarch64:arm64 | armv*:armv7) ;;
-        *) continue ;;
-        esac
+        if [ "$arch" = amd64 ]; then
+            case $variant in amd64 | amd64-v[123]) ;; *) continue ;; esac
+            [ "$rank" -le "${level#v}" ] || continue
+        else
+            [ "$variant" = "$arch" ] || continue
+        fi
         if ! _archive_is_valid "$file"; then
             _ui_warn "本地安装包不完整或已损坏，已跳过：$name"
             continue
@@ -159,7 +158,7 @@ _fetch_latest_tag() {
 }
 
 _resolve_version() {
-    local varname=$1 repo=$2 tag local_version
+    local varname=$1 repo=$2 tag local_version default_var
 
     if typeset -f _install_ui_output >/dev/null 2>&1; then
         _ui_info "查询 ${repo##*/} 最新版本"
@@ -174,12 +173,8 @@ _resolve_version() {
         return 0
     fi
 
-    case "$varname" in
-    VERSION_MIHOMO) local_version=$DEFAULT_VERSION_MIHOMO ;;
-    VERSION_YQ) local_version=$DEFAULT_VERSION_YQ ;;
-    VERSION_SUBCONVERTER) local_version=$DEFAULT_VERSION_SUBCONVERTER ;;
-    VERSION_UI) local_version=$DEFAULT_VERSION_UI ;;
-    esac
+    default_var=DEFAULT_$varname
+    local_version=${!default_var}
     if [ "${CLASHCTL_LATEST_VERSION_FALLBACK_WARNED:-0}" -eq 0 ]; then
         _ui_warn "无法查询部分组件的最新版本，改用内置版本"
         CLASHCTL_LATEST_VERSION_FALLBACK_WARNED=1
@@ -198,10 +193,7 @@ _archive_is_valid() {
 
     [ -f "$archive" ] && [ ! -L "$archive" ] && [ -s "$archive" ] || return 1
     case $expected in
-    *.zip)
-        unzip -tqq "$archive" >/dev/null 2>&1 ||
-            tar -tf "$archive" >/dev/null 2>&1
-        ;;
+    *.zip) unzip -tqq "$archive" >/dev/null 2>&1 ;;
     *.tar.gz | *.tgz) tar -tzf "$archive" >/dev/null 2>&1 ;;
     *.gz) gzip -tq "$archive" >/dev/null 2>&1 ;;
     *) gzip -tq "$archive" >/dev/null 2>&1 || unzip -tqq "$archive" >/dev/null 2>&1 ;;
@@ -209,12 +201,12 @@ _archive_is_valid() {
 }
 
 _managed_directory_is_safe() {
-    local path=$1 owner mode
+    local path=$1 metadata mode
 
     [ -d "$path" ] && [ ! -L "$path" ] || return 1
-    owner=$(stat -c %u -- "$path" 2>/dev/null) || return 1
-    mode=$(stat -c %a -- "$path" 2>/dev/null) || return 1
-    [ "$owner" -eq "$(id -u)" ] &&
+    metadata=$(stat -c '%u:%a' -- "$path" 2>/dev/null) || return 1
+    mode=${metadata#*:}
+    [ "${metadata%%:*}" -eq "$EUID" ] &&
         [ $((8#$mode & 0700)) -eq $((8#700)) ] &&
         [ $((8#$mode & 0022)) -eq 0 ]
 }
@@ -457,11 +449,9 @@ _download_archive() {
                     _ui_detail '建议' '请检查网络后重试，也可使用加速代理'
                 fi
             else
-                if [ -n "${GH_PROXY:-}" ]; then
-                    _ui_detail '建议' '延长单次下载时限，或更换加速代理'
-                else
-                    _ui_detail '建议' '延长单次下载时限，或使用加速代理'
-                fi
+                local proxy_action='使用加速代理'
+                [ -z "${GH_PROXY:-}" ] || proxy_action='更换加速代理'
+                _ui_detail '建议' "延长单次下载时限，或$proxy_action"
             fi
         else
             case "$download_rc" in
@@ -513,22 +503,25 @@ download_zip() {
         _ui_detail "要求" "必须是当前用户所有的真实目录，且组用户和其他用户不可写"
         return 1
     }
-    local url_clash url_mihomo url_yq url_subconverter
-    local arch level=v1 mihomo_archive='' archive_rc=0
+    local arch mihomo_arch='' yq_arch sub_arch level=v1 mihomo_archive='' archive_rc=0
     arch=$(uname -m) || {
         _ui_error "无法检测系统架构"
         return 1
     }
-    [ "$arch" != x86_64 ] || level=$(_mihomo_cpu_level)
+    case "$arch" in
+    x86_64) mihomo_arch=amd64 yq_arch=amd64 sub_arch=linux64; level=$(_mihomo_cpu_level) ;;
+    *86*) mihomo_arch=386 yq_arch=386 sub_arch=linux32 ;;
+    armv*) mihomo_arch=armv7 yq_arch=arm sub_arch=armv7 ;;
+    aarch64) mihomo_arch=arm64 yq_arch=arm64 sub_arch=aarch64 ;;
+    esac
 
     CLASHCTL_LATEST_VERSION_FALLBACK_WARNED=0
     local item
     for item in "$@"; do
         case $item in
-        clash) ;;
         mihomo)
             archive_rc=0
-            mihomo_archive=$(_find_mihomo_archive "$arch" "$level") || archive_rc=$?
+            mihomo_archive=$(_find_mihomo_archive "$mihomo_arch" "$level") || archive_rc=$?
             case $archive_rc in
             0)
                 VERSION_MIHOMO=${mihomo_archive##*-}
@@ -550,54 +543,19 @@ download_zip() {
         esac
     done
 
-    local mihomo_tag=${VERSION_MIHOMO:-} yq_tag=${VERSION_YQ:-}
-    local subconverter_tag=${VERSION_SUBCONVERTER:-} ui_tag=${VERSION_UI:-}
-    mihomo_tag=${mihomo_tag##*-}
-    case "$arch" in
-    x86_64)
-        url_clash=https://github.com/nelvko/clashctl/releases/download/clash/clash-linux-amd64-2023.08.17.gz
-        url_mihomo=https://github.com/MetaCubeX/mihomo/releases/download/${mihomo_tag}/mihomo-linux-amd64-${level}-${mihomo_tag}.gz
-        url_yq=https://github.com/mikefarah/yq/releases/download/${yq_tag}/yq_linux_amd64.tar.gz
-        url_subconverter=https://github.com/${SUBCONVERTER_REPO}/releases/download/${subconverter_tag}/subconverter_linux64.tar.gz
-        ;;
-    *86*)
-        url_clash=https://github.com/nelvko/clashctl/releases/download/clash/clash-linux-386-2023.08.17.gz
-        url_mihomo=https://github.com/MetaCubeX/mihomo/releases/download/${mihomo_tag}/mihomo-linux-386-${mihomo_tag}.gz
-        url_yq=https://github.com/mikefarah/yq/releases/download/${yq_tag}/yq_linux_386.tar.gz
-        url_subconverter=https://github.com/${SUBCONVERTER_REPO}/releases/download/${subconverter_tag}/subconverter_linux32.tar.gz
-        ;;
-    armv*)
-        url_clash=https://github.com/nelvko/clashctl/releases/download/clash/clash-linux-armv5-2023.08.17.gz
-        url_mihomo=https://github.com/MetaCubeX/mihomo/releases/download/${mihomo_tag}/mihomo-linux-armv7-${mihomo_tag}.gz
-        url_yq=https://github.com/mikefarah/yq/releases/download/${yq_tag}/yq_linux_arm.tar.gz
-        url_subconverter=https://github.com/${SUBCONVERTER_REPO}/releases/download/${subconverter_tag}/subconverter_armv7.tar.gz
-        ;;
-    aarch64)
-        url_clash=https://github.com/nelvko/clashctl/releases/download/clash/clash-linux-arm64-2023.08.17.gz
-        url_mihomo=https://github.com/MetaCubeX/mihomo/releases/download/${mihomo_tag}/mihomo-linux-arm64-${mihomo_tag}.gz
-        url_yq=https://github.com/mikefarah/yq/releases/download/${yq_tag}/yq_linux_arm64.tar.gz
-        url_subconverter=https://github.com/${SUBCONVERTER_REPO}/releases/download/${subconverter_tag}/subconverter_aarch64.tar.gz
-        ;;
-    *)
+    [ -n "$mihomo_arch" ] || {
         _ui_error "不支持的系统架构：$arch"
         _ui_detail "缓存目录" "$ZIP_BASE_DIR"
         return 1
-        ;;
-    esac
-
-    # UI 为纯静态资源，与架构无关
-    local url_ui="https://github.com/Zephyruso/zashboard/releases/download/${ui_tag}/dist.zip"
+    }
+    local mihomo_variant=$mihomo_arch
+    [ "$mihomo_arch" != amd64 ] || mihomo_variant+="-$level"
     local url target label version_token version_source_var
 
     for item in "$@"; do
         case $item in
-        clash)
-            url=$url_clash
-            target="${ZIP_BASE_DIR}/$(basename -- "$url")"
-            label='clash 2023.08.17'
-            ;;
         mihomo)
-            url=$url_mihomo
+            url="https://github.com/MetaCubeX/mihomo/releases/download/${VERSION_MIHOMO##*-}/mihomo-linux-${mihomo_variant}-${VERSION_MIHOMO##*-}.gz"
             ZIP_KERNEL_LOCAL=0
             if [ -n "$mihomo_archive" ]; then
                 target=$mihomo_archive
@@ -609,26 +567,26 @@ download_zip() {
             label="mihomo ${VERSION_MIHOMO}"
             ;;
         yq)
-            url=$url_yq
+            url="https://github.com/mikefarah/yq/releases/download/${VERSION_YQ}/yq_linux_${yq_arch}.tar.gz"
             version_token=$(_cache_token "$VERSION_YQ")
             target="${ZIP_BASE_DIR}/yq-${version_token}-${arch}.tar.gz"
             label="yq ${VERSION_YQ}"
             ;;
         subconverter)
-            url=$url_subconverter
+            url="https://github.com/${SUBCONVERTER_REPO}/releases/download/${VERSION_SUBCONVERTER}/subconverter_${sub_arch}.tar.gz"
             version_token=$(_cache_token "$VERSION_SUBCONVERTER")
             target="${ZIP_BASE_DIR}/subconverter-${version_token}-${arch}.tar.gz"
             label="subconverter ${VERSION_SUBCONVERTER}"
             ;;
         ui)
-            url=$url_ui
+            url="https://github.com/Zephyruso/zashboard/releases/download/${VERSION_UI}/dist.zip"
             version_token=$(_cache_token "$VERSION_UI")
             target="${ZIP_BASE_DIR}/dist-${version_token}.zip"
             label="zashboard ${VERSION_UI}"
             ;;
         esac
 
-        if [ "$item" != clash ] && typeset -f _install_ui_output >/dev/null 2>&1 &&
+        if typeset -f _install_ui_output >/dev/null 2>&1 &&
             [ "${_INSTALL_VERBOSE:-}" != 1 ]; then
             version_source_var="VERSION_${item^^}_SOURCE"
             case ${!version_source_var:-} in
@@ -638,7 +596,7 @@ download_zip() {
         fi
         _download_archive "$label" "$url" "$target" || return 1
         case $item in
-        clash | mihomo) ZIP_KERNEL=$target ;;
+        mihomo) ZIP_KERNEL=$target ;;
         yq) ZIP_YQ=$target ;;
         subconverter) ZIP_SUBCONVERTER=$target ;;
         ui) ZIP_UI=$target ;;
@@ -648,23 +606,20 @@ download_zip() {
 }
 
 _component_file_is_safe() {
-    local path=$1 expected_mode=$2 owner mode
+    local path=$1 expected_mode=$2 metadata
 
     [ -f "$path" ] && [ ! -L "$path" ] || return 1
-    owner=$(stat -c %u -- "$path" 2>/dev/null) || return 1
-    mode=$(stat -c %a -- "$path" 2>/dev/null) || return 1
-    [ "$owner" -eq "$(id -u)" ] && [ "$mode" = "$expected_mode" ]
+    metadata=$(stat -c '%u:%a' -- "$path" 2>/dev/null) || return 1
+    [ "$metadata" = "$EUID:$expected_mode" ]
 }
 
 _component_tree_is_safe() {
     local root=$1 unexpected
 
     [ -d "$root" ] && [ ! -L "$root" ] || return 1
-    unexpected=$(find "$root" ! -user "$(id -u)" -print -quit 2>/dev/null) || return 1
-    [ -z "$unexpected" ] || return 1
-    unexpected=$(find "$root" ! -type d ! -type f -print -quit 2>/dev/null) || return 1
-    [ -z "$unexpected" ] || return 1
-    unexpected=$(find "$root" -perm /022 -print -quit 2>/dev/null) || return 1
+    unexpected=$(find "$root" \
+        \( ! -user "$EUID" -o \( ! -type d ! -type f \) -o -perm /022 \) \
+        -print -quit 2>/dev/null) || return 1
     [ -z "$unexpected" ]
 }
 
@@ -741,11 +696,7 @@ _component_prepare_ui() {
     local candidate="$extract_dir/dist" unexpected
 
     /usr/bin/install -d -m 0700 -- "$extract_dir" || return 1
-    if ! unzip -oqq "$archive" -d "$extract_dir" 2>/dev/null; then
-        command rm -rf -- "$extract_dir" || return 1
-        /usr/bin/install -d -m 0700 -- "$extract_dir" || return 1
-        _component_extract_tar "$archive" "$extract_dir" || return 1
-    fi
+    unzip -oqq "$archive" -d "$extract_dir" 2>/dev/null || return 1
     unexpected=$(find "$extract_dir" -mindepth 1 -maxdepth 1 \
         ! -name dist -print -quit 2>/dev/null) || return 1
     [ -z "$unexpected" ] && [ -d "$candidate" ] && [ ! -L "$candidate" ] || return 2
@@ -779,7 +730,7 @@ _install_component() (
     case "$component" in
     kernel)
         target=$BIN_KERNEL root=$BIN_BASE_DIR label=运行组件目录
-        [ "${CLASHCTL_KERNEL:-mihomo}" != mihomo ] || _mihomo_install_path_available || return 1
+        _mihomo_install_path_available || return 1
         verifier=(_component_file_is_safe 755)
         ;;
     yq)

@@ -39,7 +39,7 @@ _uninstall_ui_log() {
 main() (
     _install_ui_output() { _uninstall_ui_log "$2" "$3" "$1"; }
     local answer='' initialized=true script_home install_home marker cache recovery_home
-    local caller_shell proxy_present=false operation_lock_lib rc=0
+    local caller_shell proxy_present=false rc=0
     [ -z "${http_proxy:-}${https_proxy:-}${HTTP_PROXY:-}${HTTPS_PROXY:-}${all_proxy:-}${ALL_PROXY:-}" ] || proxy_present=true
     caller_shell=$(readlink "/proc/$PPID/exe" 2>/dev/null) || caller_shell=${SHELL:-}
     caller_shell=${caller_shell##*/}
@@ -85,16 +85,14 @@ main() (
         printf '安装标记不匹配，已取消卸载：%s\n' "$install_home" >&2
         return 1 ;;
     esac
-    operation_lock_lib="$script_home/scripts/lib/operation-lock.sh"
-    if ! grep -q '^_directory_lock_acquire()' "$operation_lock_lib" 2>/dev/null; then
-        operation_lock_lib="$CLASHCTL_SRC/scripts/lib/operation-lock.sh"
-    fi
-    grep -q '^_directory_lock_acquire()' "$operation_lock_lib" 2>/dev/null || {
-        printf '请使用附带新版操作锁库的卸载源码重试\n' >&2
+    # 校验兼容边界；锁和卸载操作都使用目标安装中的同一套库。
+    . "$script_home/install.sh" || return 1
+    _source_validate "$install_home" installed >/dev/null 2>&1 || {
+        _install_reject_legacy "$install_home"
         return 1
     }
     # shellcheck source=/dev/null
-    . "$operation_lock_lib" || return 1
+    . "$install_home/scripts/lib/operation-lock.sh" || return 1
     trap 'rc=$?; trap - EXIT; trap "" INT TERM HUP; operation_lock_release || true; exit "$rc"' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
@@ -131,13 +129,10 @@ main() (
             printf '.env 无法读取，已保留安装目录\n' >&2; return 1
         fi
         unset CLASHCTL_KERNEL INIT_TYPE
-        . "$CLASHCTL_SRC/scripts/preflight.sh" || {
+        . "$install_home/scripts/preflight.sh" || {
             _uninstall_ui_log error '加载安装配置失败，卸载中止，已保留安装目录'
             return 1
         }
-        # 旧安装的 preflight 可能重新定义锁函数，服务操作继续使用本次卸载器的实现。
-        # shellcheck source=/dev/null
-        . "$operation_lock_lib" || return 1
         if [ "$CLASHCTL_HOME" != "$install_home" ] || [ "$CLASHCTL_SRC" != "$install_home" ]; then
             _install_ui_error '.env 改写了安装路径，已停止卸载'
             return 1

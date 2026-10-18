@@ -13,6 +13,7 @@ export CI=1
 ROOT_USER=0 USER_MANAGER_AVAILABLE=1
 _is_root() { [ "$ROOT_USER" -eq 1 ]; }
 service_user_available() { [ "$USER_MANAGER_AVAILABLE" -eq 1 ]; }
+_is_tun_enabled() { return 1; }
 _install_ui_error() { printf '%s\n' "$*" >&2; }
 _install_ui_info() { printf '%s\n' "$*" >&2; }
 _install_ui_warn() { printf '%s\n' "$*" >&2; }
@@ -62,17 +63,13 @@ for saved in '' nohup systemd-user; do
         grep -q 'systemd' "$WORK_DIR/unavailable.out" || fail 'unavailable manager was not diagnosed'
     )
 done
+# root 约束由公开 main 校验，内部选择器只处理已验证的参数。
 (
-    ROOT_USER=1 INIT_TYPE='' service_manager=systemd
-    if _install_select_service systemd-user >"$WORK_DIR/root.out" 2>&1; then
-        fail 'root was allowed to select a user service'
+    id() { [ "$*" != -u ] || { printf '0\n'; return; }; command id "$@"; }
+    if main --service systemd-user >"$WORK_DIR/root.out" 2>&1; then
+        fail 'root was allowed to install a user service'
     fi
-    grep -Eq '普通用户|root' "$WORK_DIR/root.out" || fail 'root selection error omitted user scope'
-)
-(
-    # 兼容没有能力探测函数的旧安装器 fixture。
-    unset -f service_user_available
-    assert_selection auto '' nohup nohup 'missing capability helper'
+    grep -q '普通用户' "$WORK_DIR/root.out" || fail 'root error omitted user scope'
 )
 
 # 使用真正的控制终端验证 /dev/tty 输入；每个子进程最多等待 5 秒。
@@ -142,10 +139,10 @@ PY
     _install_lock() { :; }
     _install_method() { printf 'archive\n'; }
     _install_intro() { :; }
-    _install_maintenance_finish() { :; }
+    _install_refresh_current() { :; }
     _install_complete() { :; }
     _install_main_cleanup() { :; }
-    _install_initialize() { printf '%s\n' "${8-}" >"$WORK_DIR/parameter-result"; }
+    _install_initialize() { printf '%s\n' "${7-}" >"$WORK_DIR/parameter-result"; }
 
     for value in auto systemd-user nohup; do
         for form in separate equals; do
@@ -187,7 +184,7 @@ run_failed_switch() {
     # shellcheck disable=SC2034
     local service_previous_active=false service_previous_enabled=false service_previous_privileged=false
     # shellcheck disable=SC2034
-    local legacy_recovery_required=false stage=''
+    local stage=''
     _install_use_service() { INIT_TYPE=$1; service_manager=$1; }
     _service_target() { printf '%s/%s.unit\n' "$CASE_DIR" "$service_manager"; }
     _service_check_conflict() { [ "${CONFLICT_TARGET:-0}" -eq 0 ] || [ "$service_manager" != "$selected" ]; }
@@ -349,19 +346,17 @@ systemctl() {
 clashstart() { service_is_active && return 0; service_start && service_enable; }
 clashsub() { printf 'configured\n' >"$CLASH_CONFIG_BASE"; service_start; }
 apply_rc() { touch "$CLASH_DATA_DIR/shell-ready"; }
-_install_shell_snapshot() { :; }
 _install_ui_step() { :; }
 _install_ui_ok() { printf '%s\n' "$*"; }
 FIXTURE
 
-for scenario in 'new-auto auto none 1 0 systemd-user 0' 'new-fallback auto none 0 0 nohup 0' \
-    'new-user-sub systemd-user none 1 0 systemd-user 0 yes 0' \
-    'new-nohup-sub nohup none 1 0 nohup 0 yes 0' \
-    'new-user-tun systemd-user none 1 0 systemd-user 0 no 1' \
-    'keep-nohup auto nohup 1 1 nohup 0' 'switch-user systemd-user nohup 1 1 systemd-user 0' \
-    'switch-nohup nohup systemd-user 1 1 nohup 0' 'migrated-auto auto nohup 1 1 nohup 1' \
-    'migrated-explicit systemd-user nohup 1 1 systemd-user 1'; do
-    read -r case_name requested saved available configured expected migrating subscribing tun <<<"$scenario"
+for scenario in 'new-auto auto none 1 0 systemd-user' 'new-fallback auto none 0 0 nohup' \
+    'new-user-sub systemd-user none 1 0 systemd-user yes 0' \
+    'new-nohup-sub nohup none 1 0 nohup yes 0' \
+    'new-user-tun systemd-user none 1 0 systemd-user no 1' \
+    'keep-nohup auto nohup 1 1 nohup' 'switch-user systemd-user nohup 1 1 systemd-user' \
+    'switch-nohup nohup systemd-user 1 1 nohup'; do
+    read -r case_name requested saved available configured expected subscribing tun <<<"$scenario"
     subscribing=${subscribing:-no} tun=${tun:-0}
     initialize_home="$WORK_DIR/$case_name"
     mkdir -p "$initialize_home/scripts/cmd" "$initialize_home/resources" "$initialize_home/data"
@@ -374,24 +369,18 @@ service_manager=''
 LOADER
     if [ "$saved" != none ]; then
         printf 'CLASHCTL_KERNEL=mihomo\nINIT_TYPE=%s\n' "$saved" >"$initialize_home/.env"
-        if [ "$migrating" -eq 0 ]; then
-            touch "$initialize_home/data/registered-$saved" "$initialize_home/data/active-$saved"
-            [ "$saved" != systemd-user ] || touch "$initialize_home/data/enabled-$saved"
-        fi
+        touch "$initialize_home/data/registered-$saved" "$initialize_home/data/active-$saved"
+        [ "$saved" != systemd-user ] || touch "$initialize_home/data/enabled-$saved"
     fi
     [ "$configured" -ne 1 ] || printf 'configured\n' >"$initialize_home/data/config.yaml"
     (
         export CLASHCTL_HOME="$initialize_home"
         # shellcheck disable=SC2034  # 安装器读取锁库路径；fixture 禁用实际操作锁。
-        CLASHCTL_INSTALL_LOCK_LIB='' USER_MANAGER_AVAILABLE=$available FIXTURE_TUN=$tun
-        backup_arg=''
-        [ "$migrating" -eq 0 ] || backup_arg="$WORK_DIR/legacy-backup"
+        CLASHCTL_INSTALL_SOURCE='' USER_MANAGER_AVAILABLE=$available FIXTURE_TUN=$tun
         subscription_arg=''
         [ "$subscribing" != yes ] || subscription_arg=https://example.invalid/install-subscription
-        _install_initialize mihomo master '' '' '' "$backup_arg" "$subscription_arg" "$requested"
+        _install_initialize mihomo master '' '' '' "$subscription_arg" "$requested"
         _install_next_step bash >"$initialize_home/footer" 2>&1
-        [ "$migrating" -eq 0 ] || [ "${service_switch_pending:-false}" = false ] ||
-            fail 'legacy migration recorded a second service switch transaction'
     ) >"$initialize_home/output" 2>&1 || {
         cat "$initialize_home/output" >&2
         fail "actual initialization failed: $case_name"
@@ -426,14 +415,6 @@ LOADER
             grep -q '按需添加订阅:' "$initialize_home/footer" || fail 'direct installation omitted optional subscription'
         else
             ! grep -q '按需添加订阅:' "$initialize_home/footer" || fail 'configured installation suggested adding a subscription'
-        fi
-    elif [ "$migrating" -eq 1 ]; then
-        [ "$(grep -c "^start:$expected$" "$initialize_home/data/operations")" -eq 1 ] ||
-            fail "legacy migration did not start the selected backend exactly once: $case_name"
-        ! grep -q '^remove:' "$initialize_home/data/operations" || fail 'legacy migration repeated old service removal'
-        if [ "$saved" != "$expected" ]; then
-            [ ! -e "$initialize_home/data/active-$saved" ] || fail 'legacy migration retained the old backend process'
-            [ ! -e "$initialize_home/data/registered-$saved" ] || fail 'legacy migration retained the old registration'
         fi
     elif [ "$saved" = "$expected" ]; then
         ! grep -Eq '^(start|remove):' "$initialize_home/data/operations" || fail 'unchanged installation restarted its service'

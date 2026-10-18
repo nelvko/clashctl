@@ -66,30 +66,12 @@ prepare || fail 'installed program was not reused before ambiguous archives'
 assert_version v1.19.32
 assert_no_network
 
-setup legacy
-mkdir "$BIN_BASE_DIR/mihomo"
-make_program "$BIN_BASE_DIR/mihomo/mihomo" v1.18.0
-printf 'keep-parent-content\n' >"$BIN_BASE_DIR/mihomo/other-file"
-BIN_KERNEL=$(bin_kernel_path)
-[ "$BIN_KERNEL" = "$BIN_BASE_DIR/mihomo/mihomo" ] || fail 'existing nested program path was not retained'
-make_archive amd64-v3 v1.19.32
-prepare || { cat "$WORK_DIR/output"; fail 'existing nested program was not reused'; }
-assert_version v1.18.0
-[ "$BIN_KERNEL" = "$BIN_BASE_DIR/mihomo/mihomo" ] || fail 'reusing the nested program changed its path'
-[ -f "$ZIP_BASE_DIR/mihomo-linux-amd64-v3-v1.19.32.gz" ] || fail 'reusing the nested program removed the local archive'
-[ "$(<"$BIN_BASE_DIR/mihomo/other-file")" = keep-parent-content ] || fail 'reusing the nested program modified its parent contents'
-assert_no_network
-
-# 需要替换程序时仍写回原嵌套路径，不替换或清空其父目录。
-ZIP_KERNEL_LOCAL=1 VERSION_MIHOMO=v1.19.32 \
-    _install_component kernel "$ZIP_BASE_DIR/mihomo-linux-amd64-v3-v1.19.32.gz" >"$WORK_DIR/output" 2>&1 || {
-    cat "$WORK_DIR/output"
-    fail 'component replacement failed at the existing nested path'
-}
-assert_version v1.19.32
-[ "$BIN_KERNEL" = "$BIN_BASE_DIR/mihomo/mihomo" ] || fail 'component replacement changed the nested program path'
-[ -d "$BIN_BASE_DIR/mihomo" ] || fail 'component replacement removed the nested parent directory'
-[ "$(<"$BIN_BASE_DIR/mihomo/other-file")" = keep-parent-content ] || fail 'component replacement removed other files in the nested parent'
+setup occupied
+mkdir "$BIN_KERNEL"
+printf 'keep-parent-content\n' >"$BIN_KERNEL/other-file"
+if prepare; then fail 'directory at the program path was accepted'; fi
+grep -q 'mihomo 程序路径被目录占用' "$WORK_DIR/output" || fail 'missing occupied-path diagnosis'
+[ "$(<"$BIN_KERNEL/other-file")" = keep-parent-content ] || fail 'occupied path contents changed'
 assert_no_network
 
 setup ambiguous
@@ -118,6 +100,28 @@ for spec in 'i686 386' 'aarch64 arm64' 'armv7l armv7' 'x86_64 amd64'; do
     assert_version v1.19.32
     assert_no_network
 done
+
+# 下载 URL 与本地包选择共用架构映射，缓存名仍保留系统原始架构。
+(
+    _download_archive() { printf '%s\n' "$2" >>"$WORK_DIR/urls"; }
+    for spec in 'x86_64 amd64-v3 amd64 linux64' 'i686 386 386 linux32' \
+        'aarch64 arm64 arm64 aarch64' 'armv7l armv7 arm armv7'; do
+        read -r arch kernel_arch yq_arch sub_arch <<<"$spec"
+        setup "remote-$arch"
+        TEST_ARCH=$arch
+        : >"$WORK_DIR/urls"
+        download_zip mihomo yq subconverter ui >"$WORK_DIR/output" 2>&1 || fail "download selection failed for $arch"
+        printf '%s\n' \
+            "https://github.com/MetaCubeX/mihomo/releases/download/v9.0.0/mihomo-linux-$kernel_arch-v9.0.0.gz" \
+            "https://github.com/mikefarah/yq/releases/download/v9.0.0/yq_linux_$yq_arch.tar.gz" \
+            "https://github.com/$SUBCONVERTER_REPO/releases/download/v9.0.0/subconverter_$sub_arch.tar.gz" \
+            'https://github.com/Zephyruso/zashboard/releases/download/v9.0.0/dist.zip' >"$WORK_DIR/expected-urls"
+        cmp -s "$WORK_DIR/expected-urls" "$WORK_DIR/urls" || fail "incorrect asset URLs for $arch"
+    done
+    setup unknown
+    if download_zip clash >"$WORK_DIR/output" 2>&1; then fail 'unsupported clash component accepted'; fi
+    grep -q '未知依赖组件：clash' "$WORK_DIR/output" || fail 'unknown component was not diagnosed'
+)
 
 setup invalid
 printf broken >"$ZIP_BASE_DIR/mihomo-linux-amd64-v3-v1.19.32.gz"

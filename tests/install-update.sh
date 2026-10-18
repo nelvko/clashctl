@@ -139,7 +139,13 @@ apply_rc() {
     SHELL_RC_BASH="$CLASH_DATA_DIR/.bashrc"
     touch "$SHELL_RC_BASH"
 }
-uninstall_service() { [ "${FAIL_STOP:-0}" = 0 ]; }
+uninstall_service() {
+    [ "${FAIL_STOP:-0}" = 0 ] || return 1
+    if [ "$CLASHCTL_KERNEL" = clash ]; then
+        touch "$CLASH_DATA_DIR/clash-retired"
+        rm -f "$CLASH_DATA_DIR/started"
+    fi
+}
 revoke_rc() { :; }
 _ui_error() { printf '%s\n' "$*" >&2; }
 _ui_info() { printf '%s\n' "$*"; }
@@ -406,16 +412,16 @@ grep -q '^CLASHCTL_UPDATE_BRANCH=iu$' "$branch_failed_home/.env" || fail 'retry 
 for form in separate equals; do
     option_home="$WORK_DIR/options-$form"
     if [ "$form" = separate ]; then
-        option_args=(--kernel clash --sub 'file:///install-sub?token=example&name=main')
+        option_args=(--kernel mihomo --sub 'file:///install-sub?token=example&name=main')
     else
-        option_args=(--kernel=clash '--sub=file:///install-sub?token=example&name=main')
+        option_args=(--kernel=mihomo '--sub=file:///install-sub?token=example&name=main')
     fi
     TEST_SERVICE_MANAGER=systemd CLASHCTL_HOME="$option_home" bash "$REPO_DIR/install.sh" "${option_args[@]}" \
         >"$WORK_DIR/options-$form.out" 2>&1 ||
         { cat "$WORK_DIR/options-$form.out"; fail "install options rejected: $form"; }
     [ "$(cat "$option_home/data/subscription")" = 'file:///install-sub?token=example&name=main' ] ||
         fail "install subscription was not passed through: $form"
-    [ "$(cat "$option_home/data/download-options")" = 'clash|master|' ] ||
+    [ "$(cat "$option_home/data/download-options")" = 'mihomo|master|' ] ||
         fail "install kernel option was not applied: $form"
     [ -f "$option_home/data/started" ] || fail "install subscription was not activated: $form"
     [ -f "$option_home/data/enabled" ] || fail "install subscription did not enable service: $form"
@@ -550,23 +556,22 @@ grep -Eq '^GH_PROXY=https://gh-proxy\.org/?$' "$WORK_DIR/readme-home/.env" || fa
 grep -q '^CLASHCTL_UPDATE_BRANCH=master$' "$WORK_DIR/readme-home/.env" || fail 'README master branch was not persisted'
 # 续装保留已保存的选项；显式参数优先，空代理可切回直连。
 retry_home="$WORK_DIR/retry-options"
-CLASHCTL_HOME="$retry_home" CLASHCTL_UPDATE_BRANCH=iu bash "$REPO_DIR/install.sh" --kernel clash --gh-proxy=https://old.proxy.test >"$WORK_DIR/options.out" 2>&1
+CLASHCTL_HOME="$retry_home" CLASHCTL_UPDATE_BRANCH=iu bash "$REPO_DIR/install.sh" --kernel mihomo --gh-proxy=https://old.proxy.test >"$WORK_DIR/options.out" 2>&1
 env -u GH_PROXY -u CLASHCTL_UPDATE_BRANCH CLASHCTL_HOME="$retry_home" bash "$retry_home/install.sh" >"$WORK_DIR/options.out" 2>&1
-[ "$(cat "$retry_home/data/download-options")" = 'clash|iu|https://old.proxy.test' ] || fail 'retry lost saved options'
-# 已有安装禁止切换内核，检查必须早于更新、配置写入和服务操作。
+[ "$(cat "$retry_home/data/download-options")" = 'mihomo|iu|https://old.proxy.test' ] || fail 'retry lost saved options'
+# 已移除的 clash 参数必须在更新、配置写入和服务操作前拒绝。
 cp "$retry_home/.env" "$WORK_DIR/kernel-env.expected"
 retry_head=$("$REAL_GIT" -C "$retry_home" rev-parse HEAD)
 for kernel_form in equals separate; do
-    kernel_args=(--kernel=mihomo)
-    [ "$kernel_form" != separate ] || kernel_args=(--kernel mihomo)
+    kernel_args=(--kernel=clash)
+    [ "$kernel_form" != separate ] || kernel_args=(--kernel clash)
     if FAIL_FETCH=1 CLASHCTL_HOME="$retry_home" \
         bash "$retry_home/install.sh" "${kernel_args[@]}" >"$WORK_DIR/kernel-change.out" 2>&1; then
-        fail "existing installation changed kernel: $kernel_form"
+        fail "removed kernel was accepted: $kernel_form"
     fi
-    grep -q '已有安装不支持切换内核' "$WORK_DIR/kernel-change.out" || fail 'kernel change was not diagnosed before fetch'
+    grep -q -- '--kernel 仅支持 mihomo' "$WORK_DIR/kernel-change.out" || fail 'kernel was not diagnosed before fetch'
     cmp -s "$retry_home/.env" "$WORK_DIR/kernel-env.expected" || fail 'kernel rejection modified config'
     [ "$("$REAL_GIT" -C "$retry_home" rev-parse HEAD)" = "$retry_head" ] || fail 'kernel rejection updated source'
-    [ "$(cat "$retry_home/data/download-options")" = 'clash|iu|https://old.proxy.test' ] || fail 'kernel rejection downloaded components'
     [ ! -e "$retry_home/.clashctl-incomplete" ] || fail 'kernel rejection changed installation state'
 done
 (
@@ -581,14 +586,14 @@ done
     [ ! -e "$retry_home/.clashctl-incomplete" ] || fail 'locked retry changed installation state'
 )
 CLASHCTL_HOME="$retry_home" CLASHCTL_UPDATE_BRANCH=master GH_PROXY=https://env.proxy.test \
-    bash "$retry_home/install.sh" --kernel clash --gh-proxy=https://new.proxy.test >"$WORK_DIR/options.out" 2>&1
-[ "$(cat "$retry_home/data/download-options")" = 'clash|master|https://new.proxy.test' ] || fail 'saved options overrode retry arguments'
+    bash "$retry_home/install.sh" --kernel mihomo --gh-proxy=https://new.proxy.test >"$WORK_DIR/options.out" 2>&1
+[ "$(cat "$retry_home/data/download-options")" = 'mihomo|master|https://new.proxy.test' ] || fail 'saved options overrode retry arguments'
 env -u GH_PROXY -u CLASHCTL_UPDATE_BRANCH CLASHCTL_HOME="$retry_home" \
     bash "$retry_home/install.sh" --gh-proxy= >"$WORK_DIR/options.out" 2>&1
-[ "$(cat "$retry_home/data/download-options")" = 'clash|master|' ] || fail 'retry could not clear proxy'
+[ "$(cat "$retry_home/data/download-options")" = 'mihomo|master|' ] || fail 'retry could not clear proxy'
 env -u GH_PROXY -u CLASHCTL_UPDATE_BRANCH CLASHCTL_HOME="$retry_home" \
     bash "$retry_home/install.sh" >"$WORK_DIR/options.out" 2>&1
-[ "$(cat "$retry_home/data/download-options")" = 'clash|master|' ] || fail 'retry options were not persisted'
+[ "$(cat "$retry_home/data/download-options")" = 'mihomo|master|' ] || fail 'retry options were not persisted'
 CLASHCTL_HOME="$retry_home" CLASHCTL_DOWNLOAD_TIMEOUT=180 bash "$retry_home/install.sh" \
     >"$WORK_DIR/options.out" 2>&1
 [ "$(cat "$retry_home/data/download-timeout")" = 180 ] || fail 'retry timeout was overridden by saved config'
@@ -601,7 +606,7 @@ CLASHCTL_HOME="$ignored_existing" GH_PROXY=https://env.proxy.test \
     bash "$retry_home/install.sh" --home "$retry_home" --gh-proxy=https://flag-existing.test \
     >"$WORK_DIR/existing-home.out" 2>&1 ||
     { cat "$WORK_DIR/existing-home.out"; fail 'home could not update existing installation'; }
-[ "$(cat "$retry_home/data/download-options")" = 'clash|master|https://flag-existing.test' ] ||
+[ "$(cat "$retry_home/data/download-options")" = 'mihomo|master|https://flag-existing.test' ] ||
     fail 'home did not update the selected installation'
 [ ! -e "$ignored_existing" ] || fail 'existing installation update used CLASHCTL_HOME instead of home'
 # 源码不能通过重试初始化获得安装身份；克隆真实安装也不会继承 Git 私有标记。
@@ -715,384 +720,122 @@ grep -qx 'fixture_version=local-refresh' "$local_home/scripts/cmd/clashctl.sh" |
 [ "$(<"$local_home/data/config.yaml")" = 'saved local data' ] || fail 'local archive update changed data'
 [ -z "$(find "$WORK_DIR" -maxdepth 1 -type d -name 'local-home.update.*' -print -quit)" ] ||
     fail 'successful local update retained temporary source'
-# 上一版 current 布局自动切换时，始终使用新源码中的锁。
-old_protocol_home="$WORK_DIR/old-protocol-home"
-cp -a "$local_home" "$old_protocol_home"
-printf '%s\narchive\n' "$old_protocol_home" >"$old_protocol_home/.clashctl-install"
-for old_file in install.sh scripts/cmd/update.sh scripts/lib/operation-lock.sh; do
-    "$REAL_GIT" -C "$REPO_DIR" show "HEAD:$old_file" >"$old_protocol_home/$old_file"
-    case $old_file in
-    scripts/lib/operation-lock.sh) printf '\nflock() { exit 91; }\n' >>"$old_protocol_home/$old_file" ;;
-    *) printf '\nreturn 91 # 新安装器不可 source 安装目录里的旧安装器或更新器。\n' >>"$old_protocol_home/$old_file" ;;
-    esac
-    old_protocol_hash=$(sha256sum "$old_protocol_home/$old_file")
-    old_protocol_hash=${old_protocol_hash%% *}
-    sed -i "s|^[0-9a-f]*  ./$old_file$|$old_protocol_hash  ./$old_file|" "$old_protocol_home/.clashctl-files"
+# 支持的上一版安装更新/续装时，始终使用本次源码中的库。
+previous_source_home="$WORK_DIR/previous-source-home"
+cp -a "$local_home" "$previous_source_home"
+printf '%s\narchive\n' "$previous_source_home" >"$previous_source_home/.clashctl-install"
+for old_file in install.sh scripts/cmd/update.sh scripts/preflight.sh; do
+    "$REAL_GIT" -C "$REPO_DIR" show "HEAD:$old_file" >"$previous_source_home/$old_file"
+    printf '\nreturn 91 # 不可加载待更新安装中的旧库。\n' >>"$previous_source_home/$old_file"
+    previous_source_hash=$(sha256sum "$previous_source_home/$old_file")
+    previous_source_hash=${previous_source_hash%% *}
+    sed -i "s|^[0-9a-f]*  ./$old_file$|$previous_source_hash  ./$old_file|" "$previous_source_home/.clashctl-files"
 done
 # 更新失败也必须沿用新安装器的退出清理，恢复旧文件并释放目录锁。
 if PATH="$local_failure_bin:$PATH" REAL_TAR="$real_tar" \
-    LOCAL_UPDATE_PROGRAM="$old_protocol_home/scripts/cmd/clashctl.sh" FAIL_LOCAL_RESTORE=0 \
-    CLASHCTL_HOME="$old_protocol_home" bash "$local_source/install.sh" --local >"$WORK_DIR/old-protocol-failed.out" 2>&1; then
+    LOCAL_UPDATE_PROGRAM="$previous_source_home/scripts/cmd/clashctl.sh" FAIL_LOCAL_RESTORE=0 \
+    CLASHCTL_HOME="$previous_source_home" bash "$local_source/install.sh" --local >"$WORK_DIR/previous-source-failed.out" 2>&1; then
     fail 'old current partial update reported success'
 fi
-grep -q '原程序文件已恢复' "$WORK_DIR/old-protocol-failed.out" ||
-    { cat "$WORK_DIR/old-protocol-failed.out"; fail 'old current update did not use the new rollback handler'; }
+grep -q '原程序文件已恢复' "$WORK_DIR/previous-source-failed.out" ||
+    { cat "$WORK_DIR/previous-source-failed.out"; fail 'old current update did not use the new rollback handler'; }
 bash -c '. "$1"; operation_lock_acquire && trap operation_lock_release EXIT' _ "$REPO_DIR/scripts/lib/operation-lock.sh" ||
     fail 'old current failed update retained the new operation lock'
-CLASHCTL_HOME="$old_protocol_home" bash "$local_source/install.sh" --local \
-    >"$WORK_DIR/old-protocol-updated.out" 2>&1 ||
-    { cat "$WORK_DIR/old-protocol-updated.out"; fail 'old current protocol did not migrate using the new lock'; }
-grep -q '^_directory_lock_acquire()' "$old_protocol_home/scripts/lib/operation-lock.sh" ||
+: >"$previous_source_home/.clashctl-incomplete"
+CLASHCTL_HOME="$previous_source_home" bash "$local_source/install.sh" --local \
+    >"$WORK_DIR/previous-source-updated.out" 2>&1 ||
+    { cat "$WORK_DIR/previous-source-updated.out"; fail 'old current protocol did not migrate using the new lock'; }
+grep -q '^_directory_lock_acquire()' "$previous_source_home/scripts/lib/operation-lock.sh" ||
     fail 'old current protocol library was not replaced'
 # 管道更新没有伴随库，必须先准备新源码，不能调用安装目录里的旧锁函数。
-old_protocol_git="$WORK_DIR/old-protocol-git"
-cp -a "$CLASHCTL_HOME" "$old_protocol_git"
-printf '%s\ngit\n' "$old_protocol_git" >"$old_protocol_git/.clashctl-install"
-for old_file in install.sh scripts/cmd/update.sh scripts/lib/operation-lock.sh; do
-    "$REAL_GIT" -C "$REPO_DIR" show "HEAD:$old_file" >"$old_protocol_git/$old_file"
-    case $old_file in
-    scripts/lib/operation-lock.sh) printf '\nflock() { exit 91; }\n' >>"$old_protocol_git/$old_file" ;;
-    *) printf '\nreturn 91 # 管道入口不可 source 旧安装器或更新器。\n' >>"$old_protocol_git/$old_file" ;;
-    esac
+previous_source_git="$WORK_DIR/previous-source-git"
+cp -a "$CLASHCTL_HOME" "$previous_source_git"
+printf '%s\ngit\n' "$previous_source_git" >"$previous_source_git/.clashctl-install"
+for old_file in install.sh scripts/cmd/update.sh scripts/preflight.sh; do
+    "$REAL_GIT" -C "$REPO_DIR" show "HEAD:$old_file" >"$previous_source_git/$old_file"
+    printf '\nreturn 91 # 不可加载待更新安装中的旧库。\n' >>"$previous_source_git/$old_file"
 done
-"$REAL_GIT" -C "$old_protocol_git" config user.email test@example.invalid
-"$REAL_GIT" -C "$old_protocol_git" config user.name test
-"$REAL_GIT" -C "$old_protocol_git" add install.sh scripts/cmd/update.sh scripts/lib/operation-lock.sh
-"$REAL_GIT" -C "$old_protocol_git" commit -qm old-lock-protocol
-CLASHCTL_HOME="$old_protocol_git" bash -c 'cat "$1" | bash -s --' _ "$REPO_DIR/install.sh" \
-    >"$WORK_DIR/old-protocol-pipe.out" 2>&1 ||
-    { cat "$WORK_DIR/old-protocol-pipe.out"; fail 'piped update reused the old installed lock implementation'; }
-grep -q '^_directory_lock_acquire()' "$old_protocol_git/scripts/lib/operation-lock.sh" ||
+"$REAL_GIT" -C "$previous_source_git" config user.email test@example.invalid
+"$REAL_GIT" -C "$previous_source_git" config user.name test
+"$REAL_GIT" -C "$previous_source_git" add install.sh scripts/cmd/update.sh scripts/preflight.sh
+"$REAL_GIT" -C "$previous_source_git" commit -qm old-lock-protocol
+CLASHCTL_HOME="$previous_source_git" bash -c 'cat "$1" | bash -s --' _ "$REPO_DIR/install.sh" \
+    >"$WORK_DIR/previous-source-pipe.out" 2>&1 ||
+    { cat "$WORK_DIR/previous-source-pipe.out"; fail 'piped update reused the old installed lock implementation'; }
+grep -q '^_directory_lock_acquire()' "$previous_source_git/scripts/lib/operation-lock.sh" ||
     fail 'piped update did not replace the old protocol library'
-[ -z "$(find "$WORK_DIR" -maxdepth 1 -type d -name 'old-protocol-git.download.*' -print -quit)" ] ||
+[ -z "$(find "$WORK_DIR" -maxdepth 1 -type d -name 'previous-source-git.download.*' -print -quit)" ] ||
     fail 'piped update retained bootstrap source'
+# 现代格式中的 clash 必须先停止并注销，再转换内核字段。
+clash_home="$WORK_DIR/retired-clash"
+cp -a "$local_home" "$clash_home"
+printf '%s\narchive\n' "$clash_home" >"$clash_home/.clashctl-install"
+printf 'CLASHCTL_KERNEL=clash\n' >>"$clash_home/.env"
+cp "$clash_home/.env" "$WORK_DIR/clash-env.before"
+cp "$clash_home/install.sh" "$WORK_DIR/clash-install.before"
+clash_git="$WORK_DIR/retired-clash-git"
+cp -a "$CLASHCTL_HOME" "$clash_git"
+printf '%s\ngit\n' "$clash_git" >"$clash_git/.clashctl-install"
+printf 'CLASHCTL_KERNEL=clash\n' >>"$clash_git/.env"
+cp "$clash_git/.env" "$WORK_DIR/clash-git-env.before"
+if CLASHCTL_HOME="$clash_git" bash "$local_source/install.sh" --local >"$WORK_DIR/clash-git.out" 2>&1; then
+    fail 'local source overwrote a Git installation during clash conversion'
+fi
+cmp "$clash_git/.env" "$WORK_DIR/clash-git-env.before" || fail 'rejected local Git update changed the kernel option'
+[ ! -e "$clash_git/data/clash-retired" ] || fail 'rejected local Git update retired clash'
+invalid_source="$WORK_DIR/invalid-conversion-source"
+cp -a "$local_source" "$invalid_source"
+printf 'broken() {\n' >"$invalid_source/scripts/invalid.sh"
+if CLASHCTL_HOME="$clash_home" bash "$invalid_source/install.sh" --local >"$WORK_DIR/clash-invalid.out" 2>&1; then
+    fail 'clash conversion accepted invalid source'
+fi
+cmp "$clash_home/.env" "$WORK_DIR/clash-env.before" || fail 'invalid conversion source changed the kernel option'
+[ ! -e "$clash_home/data/clash-retired" ] || fail 'invalid conversion source retired clash'
+if FAIL_STOP=1 CLASHCTL_HOME="$clash_home" bash "$local_source/install.sh" --local >"$WORK_DIR/clash-stop-failed.out" 2>&1; then
+    fail 'clash conversion ignored service stop failure'
+fi
+cmp "$clash_home/.env" "$WORK_DIR/clash-env.before" || fail 'failed clash stop changed environment'
+cmp "$clash_home/install.sh" "$WORK_DIR/clash-install.before" || fail 'failed clash stop updated source'
+CLASHCTL_HOME="$clash_home" bash "$local_source/install.sh" --local --kernel mihomo >"$WORK_DIR/clash-retired.out" 2>&1 || {
+    cat "$WORK_DIR/clash-retired.out"; fail 'modern clash installation was not converted'
+}
+[ -f "$clash_home/data/clash-retired" ] || fail 'clash service was not retired before conversion'
+[ -f "$clash_home/data/started" ] || fail 'converted installation did not start mihomo'
+bash -c '. "$1"; [ "$CLASHCTL_KERNEL" = mihomo ]' _ "$clash_home/.env" || fail 'converted kernel option was not persisted'
+
 bash "$local_home/uninstall.sh" --yes >"$WORK_DIR/local-uninstall.out" 2>&1 || fail 'local installation could not be uninstalled'
 [ -f "$local_source/install.sh" ] || fail 'uninstall removed local source'
 
-# 带旧身份标记的安装：先准备新源码，失败时恢复原目录，成功时备份旧目录。
-legacy_v2="$WORK_DIR/legacy-v2-home"
-recovery_root="$WORK_DIR/.clashctl-backups"
-mkdir -p "$legacy_v2/scripts/lib" "$legacy_v2/data/profiles" "$legacy_v2/resources/dist"
-cp "$FIXTURE/install.sh" "$legacy_v2/install.sh"
-cp "$FIXTURE/scripts/preflight.sh" "$legacy_v2/scripts/preflight.sh"
-cp "$FIXTURE/scripts/lib/common.sh" "$legacy_v2/scripts/lib/common.sh"
-printf 'legacy config\n' >"$legacy_v2/data/config.yaml"
-printf 'legacy profile\n' >"$legacy_v2/data/profiles/first.yaml"
-printf 'legacy v2 cache\n' >"$legacy_v2/resources/cache.db"
-printf 'legacy v2 dashboard\n' >"$legacy_v2/resources/dist/index.html"
-printf 'CLASHCTL_KERNEL=mihomo\nCLASHCTL_UPDATE_BRANCH=iu\nGH_PROXY=https://legacy.proxy.test\nCLASHCTL_HOME=/old/path\nCLASHCTL_SRC=/old/path\n' >"$legacy_v2/.env"
-printf 'CLASHCTL_INSTALLATION=clashctl\nCLASHCTL_INSTALLATION_FORMAT=1\nCLASHCTL_INSTALLATION_HOME=%s\nCLASHCTL_INSTALLATION_UID=%s\n' \
-    "$legacy_v2" "$(id -u)" >"$legacy_v2/.clashctl-installation"
-chmod 0600 "$legacy_v2/.clashctl-installation"
-# 迁移也必须在停旧服务、复制数据和移动旧目录之前取得同一把锁。
-(
-    . "$REPO_DIR/scripts/lib/operation-lock.sh"
-    operation_lock_acquire || fail 'could not hold migration lock'
-    trap operation_lock_release EXIT
-    tar -cf "$WORK_DIR/legacy-before-lock.tar" -C "$legacy_v2" .
-    if CLASHCTL_HOME="$legacy_v2" bash "$local_source/install.sh" --local >"$WORK_DIR/locked-legacy.out" 2>&1; then
-        fail 'legacy migration ignored held lock'
+# 截止外的旧安装只报错，不读取 .env、不移动文件或接管服务。
+for kind in v1 v2 lock; do
+    legacy_home="$WORK_DIR/rejected-$kind"
+    mkdir -p "$legacy_home/scripts/lib" "$legacy_home/data"
+    printf 'exit 91\n' >"$legacy_home/.env"
+    printf 'preserve\n' >"$legacy_home/data/config.yaml"
+    if [ "$kind" = v2 ]; then
+        printf 'old marker\n' >"$legacy_home/.clashctl-installation"
+    elif [ "$kind" = lock ]; then
+        cp -a "$local_source/." "$legacy_home/"
+        printf '%s\narchive\n' "$legacy_home" >"$legacy_home/.clashctl-install"
+        chmod 0600 "$legacy_home/.clashctl-install"
+        printf '#!/bin/bash\n' >"$legacy_home/scripts/lib/operation-lock.sh"
     fi
-    grep -q '另一项 clashctl' "$WORK_DIR/locked-legacy.out" || fail 'migration did not diagnose contention'
-    tar -df "$WORK_DIR/legacy-before-lock.tar" -C "$legacy_v2" || fail 'lock contention modified legacy installation'
-    [ ! -e "$recovery_root" ] || fail 'locked migration created recovery directories'
-    [ -z "$(find "$WORK_DIR" -maxdepth 1 -name 'legacy-v2-home.download.*' -print -quit)" ] || fail 'locked migration left staged source'
-)
-# 旧服务接管必须精确匹配旧二进制与配置路径；恢复时保留启用和运行状态。
-(
-    . "$REPO_DIR/install.sh"
-    existing_kind='legacy-v2'
-    unit_target="$WORK_DIR/legacy.service"
-    unit_calls="$WORK_DIR/legacy-service.calls"
-    printf 'ExecStart=%s/bin/mihomo -d %s/resources -f %s/data/runtime.yaml\n' \
-        "$legacy_v2" "$legacy_v2" "$legacy_v2" >"$unit_target"
-    cp "$unit_target" "$WORK_DIR/legacy.service.expected"
-    detect_service_manager() { service_manager=systemd; }
-    _service_target() { printf '%s\n' "$unit_target"; }
-    systemctl() { printf '%s\n' "$*" >>"$unit_calls"; }
-    _install_legacy_service_prepare "$legacy_v2" mihomo || fail 'owned legacy service was rejected'
-    [ ! -e "$unit_target" ] || fail 'legacy service was not detached'
-    _install_legacy_service_restore mihomo || fail 'legacy service restore failed'
-    cmp -s "$unit_target" "$WORK_DIR/legacy.service.expected" || fail 'legacy service file changed after restore'
-    grep -qx 'stop mihomo' "$unit_calls" || fail 'legacy service was not stopped'
-    grep -qx 'start mihomo' "$unit_calls" || fail 'legacy service was not restarted'
-    printf 'ExecStart=/usr/bin/unrelated\n' >"$unit_target"
-    if _install_legacy_service_prepare "$legacy_v2" mihomo; then
-        fail 'foreign service was adopted as legacy service'
+    tar -cf "$WORK_DIR/rejected-before.tar" -C "$legacy_home" .
+    if CLASHCTL_HOME="$legacy_home" bash "$local_source/install.sh" --local >"$WORK_DIR/rejected.out" 2>&1; then
+        fail "old installation was accepted: $kind"
     fi
-    grep -qx 'ExecStart=/usr/bin/unrelated' "$unit_target" || fail 'foreign service was modified'
-    mkdir "$WORK_DIR/rollback-current" "$WORK_DIR/rollback-backup"
-    _service_definition_is_owned() { return 0; }
-    uninstall_service() { return 1; }
-    if _install_legacy_rollback "$WORK_DIR/rollback-old" "$WORK_DIR/rollback-backup" \
-        "$WORK_DIR/rollback-current" mihomo; then
-        fail 'rollback accepted a service that could not be stopped'
-    fi
-    [ -d "$WORK_DIR/rollback-current" ] && [ -d "$WORK_DIR/rollback-backup" ] ||
-        fail 'failed service stop moved installation directories'
-)
-# 不安全的恢复路径必须在修改旧目录之前拒绝，也不能写入链接指向的目录。
-rm -rf -- "$recovery_root"
-mkdir "$WORK_DIR/recovery-outside"
-printf 'keep outside data\n' >"$WORK_DIR/recovery-outside/sentinel"
-unsafe_cases=(root-link root-file root-mode backups-link failed-link)
-[ "$(id -u)" != 0 ] || unsafe_cases+=(foreign-owner)
-for unsafe_case in "${unsafe_cases[@]}"; do
-    case $unsafe_case in
-    root-link) ln -s "$WORK_DIR/recovery-outside" "$recovery_root" ;;
-    root-file) printf 'unrelated file\n' >"$recovery_root" ;;
-    root-mode) mkdir -m 0755 "$recovery_root" ;;
-    backups-link | failed-link)
-        mkdir -m 0700 "$recovery_root"
-        ln -s "$WORK_DIR/recovery-outside" "$recovery_root/${unsafe_case%-link}"
-        ;;
-    foreign-owner)
-        mkdir -m 0700 "$recovery_root"
-        chown 65534 "$recovery_root"
-        ;;
-    esac
-    tar -cf "$WORK_DIR/legacy-before-recovery.tar" -C "$legacy_v2" .
-    if CLASHCTL_HOME="$legacy_v2" bash "$local_source/install.sh" --local \
-        >"$WORK_DIR/recovery-unsafe.out" 2>&1; then
-        fail "migration accepted unsafe recovery directory: $unsafe_case"
-    fi
-    grep -q '恢复目录必须' "$WORK_DIR/recovery-unsafe.out" || fail 'unsafe recovery path was not diagnosed'
-    tar -df "$WORK_DIR/legacy-before-recovery.tar" -C "$legacy_v2" || fail 'unsafe recovery path modified old installation'
-    [ "$(find "$WORK_DIR/recovery-outside" -mindepth 1 | wc -l)" -eq 1 ] || fail 'unsafe recovery path wrote outside files'
-    grep -qx 'keep outside data' "$WORK_DIR/recovery-outside/sentinel" || fail 'unsafe recovery path changed outside data'
-    rm -rf -- "$recovery_root"
+    grep -q '请先使用旧版卸载脚本卸载，或通过 --home' "$WORK_DIR/rejected.out" ||
+        { cat "$WORK_DIR/rejected.out"; fail "missing cutoff diagnosis: $kind"; }
+    tar -df "$WORK_DIR/rejected-before.tar" -C "$legacy_home" || fail "old installation was modified: $kind"
 done
-# 已有散落备份由用户管理；新迁移不搬动或删除它。
-mkdir "$WORK_DIR/legacy-v2-home.bak.existing"
-printf 'keep old backup\n' >"$WORK_DIR/legacy-v2-home.bak.existing/sentinel"
-if FAIL_PREPARE=1 CLASHCTL_HOME="$legacy_v2" bash "$local_source/install.sh" --local >"$WORK_DIR/legacy-failed.out" 2>&1; then
-    fail 'failed legacy migration was accepted'
+legacy_user="$WORK_DIR/rejected-default-user"
+mkdir -p "$legacy_user/clashctl/scripts"
+printf 'exit 91\n' >"$legacy_user/clashctl/.env"
+if env -u CLASHCTL_HOME HOME="$legacy_user" bash "$local_source/install.sh" --local >"$WORK_DIR/rejected-default.out" 2>&1; then
+    fail 'old default installation was silently adopted'
 fi
-[ "$(<"$legacy_v2/data/config.yaml")" = 'legacy config' ] || fail 'failed migration lost old config'
-[ -f "$legacy_v2/.clashctl-installation" ] || fail 'failed migration did not restore old marker'
-# 显式分支在旧版迁移时也覆盖环境变量和旧 .env，并保存至新安装。
-branch_migration_home="$WORK_DIR/branch-migration"
-cp -a "$legacy_v2" "$branch_migration_home"
-sed -i "s|^CLASHCTL_INSTALLATION_HOME=.*|CLASHCTL_INSTALLATION_HOME=$branch_migration_home|" \
-    "$branch_migration_home/.clashctl-installation"
-CLASHCTL_HOME="$branch_migration_home" CLASHCTL_UPDATE_BRANCH=legacy \
-    bash "$local_source/install.sh" --local --branch master >"$WORK_DIR/branch-migration.out" 2>&1 ||
-    { cat "$WORK_DIR/branch-migration.out"; fail 'branch selection during migration failed'; }
-grep -q '^CLASHCTL_UPDATE_BRANCH=master$' "$branch_migration_home/.env" || fail 'migration did not persist branch flag'
-[ "$(cat "$branch_migration_home/data/download-options")" = 'mihomo|master|https://legacy.proxy.test' ] || fail 'migration lost explicit branch'
-CLASHCTL_HOME="$WORK_DIR/ignored-legacy-v2" bash "$local_source/install.sh" --kernel clash --local \
-    --home "$legacy_v2" >"$WORK_DIR/legacy-success.out" 2>&1 ||
-    { cat "$WORK_DIR/legacy-success.out"; fail 'legacy v2 migration failed'; }
-[ ! -e "$WORK_DIR/ignored-legacy-v2" ] || fail 'legacy v2 migration used CLASHCTL_HOME instead of home'
-[ "$(<"$legacy_v2/data/config.yaml")" = 'legacy config' ] || fail 'legacy v2 config was not migrated'
-[ "$(<"$legacy_v2/data/profiles/first.yaml")" = 'legacy profile' ] || fail 'legacy v2 profile was not migrated'
-[ "$(<"$legacy_v2/resources/cache.db")" = 'legacy v2 cache' ] || fail 'legacy v2 runtime cache was not migrated'
-[ "$(<"$legacy_v2/resources/dist/index.html")" = 'legacy v2 dashboard' ] || fail 'legacy v2 dashboard was not migrated'
-[ -f "$legacy_v2/.clashctl-install" ] || fail 'legacy v2 did not gain current marker'
-! grep -Eq '^CLASHCTL_(HOME|SRC)=' "$legacy_v2/.env" || fail 'legacy path overrides were retained'
-[ "$(<"$legacy_v2/data/download-options")" = 'clash|iu|https://legacy.proxy.test' ] ||
-    fail 'legacy v2 update options were not retained'
-[ -n "$(find "$recovery_root/backups" -maxdepth 1 -name 'legacy-v2-home.*' -print -quit)" ] ||
-    fail 'legacy v2 backup missing'
-for directory in "$recovery_root" "$recovery_root/backups" "$recovery_root/failed"; do
-    [ "$(stat -c %a "$directory")" = 700 ] || fail 'recovery directory exposes old credentials'
-done
-grep -qx 'keep old backup' "$WORK_DIR/legacy-v2-home.bak.existing/sentinel" || fail 'migration modified existing scattered backup'
-[ "$(find "$WORK_DIR" -maxdepth 1 \( -name '*.bak.*' -o -name '*.failed.*' \) | wc -l)" -eq 1 ] ||
-    fail 'migration left new scattered recovery directories'
-
-# master 实际安装目录没有 install.sh 和 preflight.sh，只有运行脚本和用户数据。
-# 模板故意设置不同代理，确认迁移沿用旧配置，不依赖当前模板的默认值。
-printf '\nGH_PROXY=https://template.proxy.test\n' >>"$local_source/.env.example"
-legacy_v1="$WORK_DIR/legacy-v1-home"
-mkdir -p "$legacy_v1/scripts/lib" "$legacy_v1/scripts/cmd" \
-    "$legacy_v1/resources/profiles" "$legacy_v1/resources/dist" \
-    "$legacy_v1/resources/proxies" "$legacy_v1/resources/rules"
-printf '#!/usr/bin/env bash\n' >"$legacy_v1/uninstall.sh"
-printf '#!/usr/bin/env bash\n' >"$legacy_v1/scripts/cmd/clashctl.sh"
-printf '#!/usr/bin/env bash\n' >"$legacy_v1/scripts/lib/service.sh"
-printf 'CLASH_CONFIG_BASE="${CLASH_RESOURCES_DIR}/config.yaml"\nCLASH_PROFILES_DIR="${CLASH_RESOURCES_DIR}/profiles"\n' >"$legacy_v1/scripts/lib/common.sh"
-printf 'export CLASHCTL_KERNEL=\047clash\047\nexport GH_PROXY=\047https://legacy.proxy.test\047\nCLASHCTL_SUB_TIMEOUT=31\nCLASHCTL_NODE_DELAY_URL=\047https://example.test/check?x=1&y=2\047\nCLASHCTL_SUB_UA="Custom Agent"\n' >"$legacy_v1/.env"
-printf 'legacy v1 config\n' >"$legacy_v1/resources/config.yaml"
-printf 'legacy v1 profile\n' >"$legacy_v1/resources/profiles/first.yaml"
-printf 'legacy selected node\n' >"$legacy_v1/resources/cache.db"
-printf 'legacy dashboard\n' >"$legacy_v1/resources/dist/index.html"
-printf 'legacy proxy provider\n' >"$legacy_v1/resources/proxies/provider"
-printf 'legacy rule provider\n' >"$legacy_v1/resources/rules/provider"
-printf 'legacy subscription history\n' >"$legacy_v1/resources/profiles.log"
-printf 'legacy failed subscription\n' >"$legacy_v1/resources/last-failed.raw"
-printf 'profiles:\n  - name: first\n    path: %s/resources/profiles/first.yaml\nuse: first\n' \
-    "$legacy_v1" >"$legacy_v1/resources/profiles.yaml"
-[ ! -e "$legacy_v1/install.sh" ] && [ ! -e "$legacy_v1/scripts/preflight.sh" ] ||
-    fail 'master runtime fixture contains source-only installer files'
-mv "$legacy_v1/uninstall.sh" "$legacy_v1/uninstall.sh.saved"
-if ( . "$REPO_DIR/install.sh"; _install_existing_kind "$legacy_v1" >/dev/null ); then
-    fail 'master runtime without its uninstall script was accepted'
-fi
-mv "$legacy_v1/uninstall.sh.saved" "$legacy_v1/uninstall.sh"
-legacy_user="$WORK_DIR/legacy-user"
-mkdir -p "$legacy_user/.config/fish/conf.d"
-printf 'export CLASHCTL_HOME=%q\n. $CLASHCTL_HOME/scripts/cmd/clashctl.sh\n' "$legacy_v1" >"$legacy_user/.bashrc"
-printf "# clashctl shell-rc (managed by install.sh, do not edit)\nset -gx CLASHCTL_HOME '%s'\n" \
-    "$legacy_v1" >"$legacy_user/.config/fish/conf.d/clashctl.fish"
-cp -p "$legacy_user/.bashrc" "$WORK_DIR/legacy-user.bashrc"
-cp -p "$legacy_user/.config/fish/conf.d/clashctl.fish" "$WORK_DIR/legacy-user.fish"
-cp "$legacy_v1/.env" "$WORK_DIR/legacy-v1.env"
-printf '%s\n' 'CLASHCTL_KERNEL=$(printf clash)' >"$legacy_v1/.env"
-if HOME="$legacy_user" bash -c '. "$HOME/.bashrc"; bash "$1" --local' _ \
-    "$local_source/install.sh" >"$WORK_DIR/v1-unsafe-kernel.out" 2>&1; then
-    fail 'migration accepted a dynamic old kernel name'
-fi
-cmp -s "$legacy_user/.bashrc" "$WORK_DIR/legacy-user.bashrc" ||
-    fail 'invalid old kernel changed shell configuration'
-mv "$WORK_DIR/legacy-v1.env" "$legacy_v1/.env"
-if HOME="$legacy_user" FAIL_RC=1 bash -c '. "$HOME/.bashrc"; bash "$1" --local' _ \
-    "$local_source/install.sh" >"$WORK_DIR/v1-rc-failed.out" 2>&1; then
-    fail 'legacy migration accepted failed shell integration'
-fi
-cmp -s "$legacy_user/.bashrc" "$WORK_DIR/legacy-user.bashrc" ||
-    fail 'failed legacy migration changed shell configuration'
-cmp -s "$legacy_user/.config/fish/conf.d/clashctl.fish" "$WORK_DIR/legacy-user.fish" ||
-    fail 'failed legacy migration changed fish configuration'
-[ -f "$legacy_v1/resources/config.yaml" ] && [ ! -e "$legacy_v1/.clashctl-install" ] ||
-    fail 'failed legacy migration did not restore master runtime directory'
-failed_v1=$(find "$recovery_root/failed" -maxdepth 1 -name 'legacy-v1-home.*' -print -quit)
-[ -n "$failed_v1" ] && [ ! -e "$failed_v1/data/started" ] ||
-    fail 'failed legacy migration left the new nohup service running'
-# Shell 集成已写入时收到 TERM，迁移回滚必须恢复用户原有的 Bash/Fish 配置。
-interrupt_v1="$WORK_DIR/interrupt-v1-home"
-cp -a -- "$legacy_v1" "$interrupt_v1"
-sed -i "s#$legacy_v1/resources/profiles/#$interrupt_v1/resources/profiles/#g" \
-    "$interrupt_v1/resources/profiles.yaml"
-interrupt_user="$WORK_DIR/interrupt-user"
-mkdir -p "$interrupt_user/.config/fish/conf.d"
-printf 'export CLASHCTL_HOME=%q\n. $CLASHCTL_HOME/scripts/cmd/clashctl.sh\n' \
-    "$interrupt_v1" >"$interrupt_user/.bashrc"
-printf "# clashctl shell-rc (managed by install.sh, do not edit)\nset -gx CLASHCTL_HOME '%s'\n" \
-    "$interrupt_v1" >"$interrupt_user/.config/fish/conf.d/clashctl.fish"
-cp -p "$interrupt_user/.bashrc" "$WORK_DIR/interrupt-user.bashrc"
-cp -p "$interrupt_user/.config/fish/conf.d/clashctl.fish" "$WORK_DIR/interrupt-user.fish"
-interrupt_shell_marker="$WORK_DIR/interrupt-shell-main.pid"
-HOME="$interrupt_user" CLASHCTL_HOME="$interrupt_v1" INTERRUPT_AFTER_RC=1 \
-    INTERRUPT_SHELL_MARKER="$interrupt_shell_marker" \
-    bash "$local_source/install.sh" --local >"$WORK_DIR/interrupt-shell.out" 2>&1 &
-interrupt_shell_launcher_pid=$!
-for ((i=0; i<300; i++)); do
-    [ ! -s "$interrupt_shell_marker" ] || break
-    kill -0 "$interrupt_shell_launcher_pid" 2>/dev/null || break
-    sleep 0.05
-done
-[ -s "$interrupt_shell_marker" ] || {
-    cat "$WORK_DIR/interrupt-shell.out" >&2
-    fail 'migration did not reach modified shell integration'
-}
-interrupt_shell_main_pid=$(cat "$interrupt_shell_marker")
-[[ $interrupt_shell_main_pid =~ ^[0-9]+$ ]] || fail 'shell integration marker did not contain a PID'
-! cmp -s "$interrupt_user/.bashrc" "$WORK_DIR/interrupt-user.bashrc" ||
-    fail 'interrupt fixture did not modify Bash configuration'
-! cmp -s "$interrupt_user/.config/fish/conf.d/clashctl.fish" "$WORK_DIR/interrupt-user.fish" ||
-    fail 'interrupt fixture did not modify Fish configuration'
-kill -TERM "$interrupt_shell_main_pid" || fail 'could not interrupt shell integration'
-if wait "$interrupt_shell_launcher_pid"; then
-    fail 'interrupted shell integration unexpectedly succeeded'
-fi
-interrupt_shell_launcher_pid=''
-interrupt_shell_main_pid=''
-cmp -s "$interrupt_user/.bashrc" "$WORK_DIR/interrupt-user.bashrc" ||
-    fail 'TERM during shell integration did not restore Bash configuration'
-cmp -s "$interrupt_user/.config/fish/conf.d/clashctl.fish" "$WORK_DIR/interrupt-user.fish" ||
-    fail 'TERM during shell integration did not restore Fish configuration'
-[ -f "$interrupt_v1/resources/config.yaml" ] && [ ! -e "$interrupt_v1/.clashctl-install" ] ||
-    fail 'TERM during shell integration did not restore old installation'
-# 迁移保留用户最后一次完成的订阅写入。
-printf 'legacy v1 profile after update\n' >"$legacy_v1/resources/profiles/first.yaml"
-HOME="$legacy_user" bash -c '. "$HOME/.bashrc"; bash "$1" --local' _ \
-    "$local_source/install.sh" >"$WORK_DIR/v1-success.out" 2>&1 ||
-    { cat "$WORK_DIR/v1-success.out"; fail 'legacy v1 migration failed'; }
-legacy_v1_backup=$(find "$recovery_root/backups" -maxdepth 1 -name 'legacy-v1-home.*' -print -quit)
-grep -q '原路径升级' "$WORK_DIR/v1-success.out" || fail 'in-place migration did not explain its path choice'
-! grep -q '旧版目录:' "$WORK_DIR/v1-success.out" || fail 'in-place migration duplicated the installation path'
-grep -Fq "旧版备份: $legacy_v1_backup" "$WORK_DIR/v1-success.out" || fail 'migration did not identify its backup'
-awk '
-    /安装完成/ { completed = 1 }
-    /旧版备份:/ { if (!completed) exit 1; backed_up = 1 }
-    /在当前终端执行/ { if (!backed_up) exit 1; guided = 1 }
-    END { if (!guided) exit 1 }
-' "$WORK_DIR/v1-success.out" || fail 'migration backup was not shown between completion and guidance'
-[ "$(<"$legacy_v1/data/config.yaml")" = 'legacy v1 config' ] || fail 'legacy v1 config was not migrated'
-[ "$(<"$legacy_v1/data/profiles/first.yaml")" = 'legacy v1 profile after update' ] ||
-    fail 'migration did not preserve the latest profile'
-[ "$(<"$legacy_v1/data/download-options")" = 'clash|master|https://legacy.proxy.test' ] ||
-    fail 'quoted/exported old kernel or proxy was not migrated'
-for file in resources/cache.db resources/dist/index.html resources/proxies/provider resources/rules/provider; do
-    cmp "$legacy_v1_backup/$file" "$legacy_v1/$file" || fail "legacy runtime resource was not migrated: $file"
-done
-cmp "$legacy_v1_backup/resources/profiles.log" "$legacy_v1/data/profiles.log" ||
-    fail 'legacy subscription history was not migrated'
-cmp "$legacy_v1_backup/resources/last-failed.raw" "$legacy_v1/data/last-failed.raw" ||
-    fail 'legacy subscription debug output was not migrated'
-grep -Fqx "    path: $legacy_v1/data/profiles/first.yaml" "$legacy_v1/data/profiles.yaml" ||
-    fail 'legacy v1 profile metadata still points to resources'
-grep -q '^CLASHCTL_SUB_TIMEOUT=31$' "$legacy_v1/.env" || fail 'legacy user option was not migrated'
-grep -Fqx "CLASHCTL_NODE_DELAY_URL='https://example.test/check?x=1&y=2'" "$legacy_v1/.env" ||
-    fail 'quoted legacy URL was not migrated'
-grep -Fqx 'CLASHCTL_SUB_UA="Custom Agent"' "$legacy_v1/.env" ||
-    fail 'quoted legacy user agent was not migrated'
-legacy_unsafe_user="$WORK_DIR/legacy-unsafe-user"
-mkdir -p "$legacy_unsafe_user"
-cp -a -- "$legacy_v1_backup" "$legacy_unsafe_user/clashctl"
-chmod g+w "$legacy_unsafe_user/clashctl/scripts/cmd/clashctl.sh"
-if env -u CLASHCTL_HOME HOME="$legacy_unsafe_user" bash "$local_source/install.sh" --local \
-    >"$WORK_DIR/v1-unsafe-default.out" 2>&1; then
-    fail 'unsafe old default directory was silently skipped'
-fi
-grep -q '无法安全确认' "$WORK_DIR/v1-unsafe-default.out" ||
-    fail 'unsafe old default directory did not explain why migration stopped'
-[ -f "$legacy_unsafe_user/clashctl/resources/config.yaml" ] && [ ! -e "$legacy_unsafe_user/.clashctl" ] ||
-    fail 'unsafe old default directory was modified or shadowed by a new installation'
-current_default_user="$WORK_DIR/current-default-user"
-current_old_home="$current_default_user/clashctl"
-mkdir -p "$current_old_home/scripts/lib"
-printf '#!/usr/bin/env bash\n' >"$current_old_home/install.sh"
-printf '#!/usr/bin/env bash\n' >"$current_old_home/scripts/preflight.sh"
-printf '#!/usr/bin/env bash\n' >"$current_old_home/scripts/lib/common.sh"
-printf '%s\narchive\n' "$current_old_home" >"$current_old_home/.clashctl-install"
-chmod 0600 "$current_old_home/.clashctl-install"
-if env -u CLASHCTL_HOME HOME="$current_default_user" bash "$local_source/install.sh" --local \
-    >"$WORK_DIR/current-default.out" 2>&1; then
-    fail 'current installation at old default path was silently shadowed'
-fi
-grep -q '已在旧默认路径发现新版安装' "$WORK_DIR/current-default.out" ||
-    fail 'current installation at old default path lacks an actionable diagnosis'
-[ ! -e "$current_default_user/.clashctl" ] || fail 'current old-path installation gained a duplicate'
-legacy_default_user="$WORK_DIR/legacy-default-user"
-mkdir -p "$legacy_default_user"
-cp -a -- "$legacy_v1_backup" "$legacy_default_user/clashctl"
-sed -i "s#$legacy_v1/resources/profiles/#$legacy_default_user/clashctl/resources/profiles/#g" \
-    "$legacy_default_user/clashctl/resources/profiles.yaml"
-env -u CLASHCTL_HOME HOME="$legacy_default_user" bash "$local_source/install.sh" --local \
-    >"$WORK_DIR/v1-default.out" 2>&1 ||
-    { cat "$WORK_DIR/v1-default.out"; fail 'historical default directory was not migrated'; }
-grep -q '迁移旧版安装' "$WORK_DIR/v1-default.out" || fail 'migration reported as new'
-grep -Fq "安装目录: $legacy_default_user/.clashctl" "$WORK_DIR/v1-default.out" || fail 'default home not shown'
-[ "$(<"$legacy_default_user/.clashctl/data/config.yaml")" = 'legacy v1 config' ] ||
-    fail 'historical default config was not migrated'
-grep -Fqx "    path: $legacy_default_user/.clashctl/data/profiles/first.yaml" \
-    "$legacy_default_user/.clashctl/data/profiles.yaml" ||
-    fail 'default-path migration retained old profile path'
-default_backup=$(find "$legacy_default_user/.clashctl-backups/backups" -maxdepth 1 -name 'clashctl.*' -print -quit)
-[ -n "$default_backup" ] ||
-    fail 'historical default directory was not backed up'
-# 卸载新版后，外部恢复资料仍可搬回旧路径，实现实际回退。
-bash "$legacy_default_user/.clashctl/uninstall.sh" --yes >"$WORK_DIR/default-uninstall.out" 2>&1 ||
-    fail 'migrated default installation could not be uninstalled'
-[ ! -e "$legacy_default_user/.clashctl" ] && [ -f "$default_backup/resources/config.yaml" ] ||
-    fail 'uninstall removed recovery backup'
-grep -Fq "恢复资料已保留，确认无需回退后可手动清理：$legacy_default_user/.clashctl-backups" \
-    "$WORK_DIR/default-uninstall.out" || fail 'uninstall did not identify preserved recovery data'
-mv -T -- "$default_backup" "$legacy_default_user/clashctl"
-cmp "$legacy_v1_backup/resources/config.yaml" "$legacy_default_user/clashctl/resources/config.yaml" ||
-    fail 'grouped backup could not restore old config'
+grep -q '请先使用旧版卸载脚本卸载' "$WORK_DIR/rejected-default.out" || fail 'old default installation omitted cutoff diagnosis'
+[ ! -e "$legacy_user/.clashctl" ] || fail 'old default installation created a new directory'
 
 if CLASHCTL_HOME="$local_source/nested" bash "$local_source/install.sh" --local >"$WORK_DIR/local-nested.out" 2>&1; then
     fail 'local installation accepted a destination inside its source'
@@ -1283,12 +1026,12 @@ with open(home + "/data/subscription") as saved:
 
 # 显式订阅和内核参数从管道入口传入，有控制终端时也不能再提示输入。
 home, output, _ = install_in_terminal("tty-option-install",
-                                     ["--kernel", "clash", "--sub", "file:///from-flag"])
+                                     ["--kernel", "mihomo", "--sub", "file:///from-flag"])
 assert prompt not in output, "flag installation prompted for a subscription"
 with open(home + "/data/subscription") as saved:
     assert saved.read() == "file:///from-flag"
 with open(home + "/data/download-options") as saved:
-    assert saved.read().startswith("clash|master|")
+    assert saved.read().startswith("mihomo|master|")
 PTY
 
 . "$REPO_DIR/scripts/lib/shell.sh"
@@ -1357,11 +1100,14 @@ PATH="$no_git_bin" CLASHCTL_HOME="$archive_home" CLASHCTL_UPDATE_BRANCH=legacy G
 [ "$(tail -n 1 "$archive_home/.clashctl-install")" = archive ] || fail 'archive type was not recorded'
 [ -s "$archive_home/.clashctl-files" ] || fail 'archive file manifest missing'
 grep -Fq 'https://proxy.example/https://github.com/nelvko/clashctl/archive/refs/heads/master.tar.gz' "$DOWNLOAD_LOG" || fail 'source archive ignored proxy or branch'
-# wget 只负责拉取源码，此处初始化桩不依赖 curl。
+# curl 是早期必需依赖，不回退到 wget，也不创建安装目录。
 mv "$no_git_bin/curl" "$WORK_DIR/saved-curl"
-PATH="$no_git_bin" CLASHCTL_HOME="$WORK_DIR/wget-home" GH_PROXY='' \
-    bash "$REPO_DIR/install.sh" >"$WORK_DIR/wget-install.out" 2>&1 || { cat "$WORK_DIR/wget-install.out"; fail 'wget fallback install failed'; }
-grep -q '^wget ' "$DOWNLOAD_LOG" || fail 'wget fallback was not used'
+if PATH="$no_git_bin" CLASHCTL_HOME="$WORK_DIR/wget-home" GH_PROXY='' \
+    bash "$REPO_DIR/install.sh" >"$WORK_DIR/no-curl.out" 2>&1; then
+    fail 'installation without curl succeeded'
+fi
+grep -q '缺少依赖: curl' "$WORK_DIR/no-curl.out" || fail 'missing curl omitted early diagnosis'
+[ ! -e "$WORK_DIR/wget-home" ] || fail 'missing curl created an installation'
 mv "$WORK_DIR/saved-curl" "$no_git_bin/curl"
 # Git 存在但失败时不能偷偷回退下载。
 before_downloads=$(wc -l <"$DOWNLOAD_LOG")

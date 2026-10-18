@@ -165,14 +165,11 @@ for state in clean dirty; do
     done
 done
 
-# 不丢失 nightly 提交标识，并兼容 Clash 与旧版 Clash Meta 的输出。
-mkdir -p "$HOME_DIR/bin/clash"
-cp "$HOME_DIR/bin/mihomo" "$HOME_DIR/bin/clash/clash"
-for flavor in nightly clash meta; do
+# 不丢失 nightly 提交标识，保留 mihomo 曾使用的 Clash Meta banner。
+for flavor in nightly meta; do
     case $flavor in
     nightly) kernel=mihomo; banner='Mihomo Meta alpha-abcdef linux amd64 with go1.26.8'; expected='mihomo alpha-abcdef' ;;
-    clash) kernel=clash; banner='Clash v1.18.0 linux amd64 with go1.21.4'; expected='clash v1.18.0' ;;
-    meta) kernel=clash; banner='Clash Meta alpha-123456 linux amd64 with go1.21.4'; expected='clash alpha-123456' ;;
+    meta) kernel=mihomo; banner='Clash Meta alpha-123456 linux amd64 with go1.21.4'; expected='mihomo alpha-123456' ;;
     esac
     printf 'CLASHCTL_KERNEL=%s\n' "$kernel" >"$HOME_DIR/.env"
     printf '%s\nUse tags: fixture\n' "$banner" >"$HOME_DIR/version-output"

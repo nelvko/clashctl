@@ -102,8 +102,15 @@ mkdir -p -- "$SOURCE_DIR/ui/dist/assets"
 printf '<html>new-ui</html>\n' >"$SOURCE_DIR/ui/dist/index.html"
 printf 'new-assets\n' >"$SOURCE_DIR/ui/dist/assets/app.js"
 chmod -R 0777 "$SOURCE_DIR/ui/dist"
-tar --create --gzip --file "$ARCHIVE_DIR/ui.zip" --numeric-owner \
-    --owner=1001 --group=1001 --directory "$SOURCE_DIR/ui" .
+python3 - "$SOURCE_DIR/ui" "$ARCHIVE_DIR/ui.zip" <<'PYZIP'
+import pathlib
+import sys
+import zipfile
+root = pathlib.Path(sys.argv[1])
+with zipfile.ZipFile(sys.argv[2], 'w') as archive:
+    for path in root.rglob('*'):
+        archive.write(path, path.relative_to(root))
+PYZIP
 
 mkdir -p -- "$SOURCE_DIR/invalid/subconverter"
 printf 'invalid-converter\n' >"$SOURCE_DIR/invalid/subconverter/subconverter"
@@ -122,9 +129,6 @@ tar --numeric-owner --list --verbose --file "$ARCHIVE_DIR/yq.tar.gz" |
 tar --numeric-owner --list --verbose --file "$ARCHIVE_DIR/subconverter.tar.gz" |
     grep -E '1001/1001' >/dev/null ||
     fail 'synthetic subconverter archive does not contain numeric owner 1001:1001'
-tar --numeric-owner --list --verbose --file "$ARCHIVE_DIR/ui.zip" |
-    grep -E '1001/1001' >/dev/null ||
-    fail 'synthetic Web UI archive does not contain numeric owner 1001:1001'
 
 # `unzip_zip`（已 source）通过这些全局变量读取测试归档。
 # shellcheck disable=SC2034
@@ -287,7 +291,7 @@ assert_eq new-converter "$(<"$BIN_SUBCONVERTER")" 'subconverter replacement'
 assert_eq fresh-rule "$(<"$BIN_SUBCONVERTER_DIR/config/fresh.ini")" \
     'subconverter archive content'
 assert_eq '<html>new-ui</html>' "$(<"$CLASH_RESOURCES_DIR/dist/index.html")" \
-    'Web UI tar fallback content'
+    'Web UI archive content'
 assert_eq legacy-manpage "$(<"$BIN_BASE_DIR/yq.1")" 'unrelated legacy manual is untouched'
 assert_eq legacy-installer "$(<"$BIN_BASE_DIR/install-man-page.sh")" 'unrelated legacy installer is untouched'
 assert_absent "$BIN_SUBCONVERTER_DIR/stale.ini" 'stale subconverter cleanup'
@@ -625,5 +629,18 @@ assert_contains "$stderr_file" '运行组件已安装' 'ui-only provisioning suc
 if [ "$(id -u)" -eq 0 ]; then
     printf 'preflight-components: ok (root numeric-owner coverage)\n'
 else
-    printf 'preflight-components: ok (numeric-owner root behavior requires root)\n'
+    # 更新器的库可以来自新源码，但配置始终来自目标安装。
+(
+    bootstrap="$WORK_DIR/bootstrap-source"
+    target_home="$WORK_DIR/target-config"
+    mkdir -p "$bootstrap/scripts" "$target_home"
+    ln -s "$REPO_DIR/scripts/lib" "$bootstrap/scripts/lib"
+    printf 'exit 91\n' >"$bootstrap/.env"
+    printf 'CLASHCTL_SUB_TIMEOUT=37\n' >"$target_home/.env"
+    export CLASHCTL_SRC="$bootstrap" CLASHCTL_HOME="$target_home"
+    . "$REPO_DIR/scripts/preflight.sh" || fail 'preflight loaded bootstrap configuration'
+    [ "$CLASHCTL_SUB_TIMEOUT" = 37 ] || fail 'preflight did not load target configuration'
+)
+
+printf 'preflight-components: ok (numeric-owner root behavior requires root)\n'
 fi

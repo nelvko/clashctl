@@ -2,7 +2,7 @@
 # 全量回归入口：顺序执行本目录全部测试（排除自身）。
 # 用法：bash tests/run-all.sh [测试名 …]
 # 示例：sudo bash tests/run-all.sh            # 全量（含 root 属主检查）
-#       bash tests/run-all.sh install-update install-legacy-nohup  # 按名筛选子集
+#       bash tests/run-all.sh install-update  # 按名筛选子集
 set -u
 
 TESTS_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)

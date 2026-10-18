@@ -125,12 +125,7 @@ _valid_config() {
   test_log=$("$BIN_KERNEL" -d "$CLASH_RESOURCES_DIR" -f "$config" -t 2>&1) || {
     printf '%s\n' "$test_log" >&2
     grep -qs "unsupport proxy type" <<<"$test_log" && {
-      local prefix="检测到订阅中包含不受支持的代理协议"
-      if [ "$CLASHCTL_KERNEL" = "clash" ]; then
-        _errorcat "${prefix}, 推荐安装使用 mihomo 内核"
-      else
-        _errorcat "${prefix}, 请检查并升级内核版本"
-      fi
+      _errorcat "检测到订阅中包含不受支持的代理协议, 请检查并升级内核版本"
     }
     return 1
   }

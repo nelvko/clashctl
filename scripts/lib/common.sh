@@ -20,14 +20,9 @@ CLASH_RESOURCES_DIR="${CLASHCTL_HOME}/resources"
 BIN_BASE_DIR="${CLASHCTL_HOME}/bin"
 # fish 托管块首行标记：写入/识别/清理共用（preflight.sh 的 revoke 同引此量）
 CLASHCTL_FISH_MANAGED_MARKER='# clashctl shell-rc (managed by install.sh, do not edit)'
-# 内核二进制路径，安装和运行共用；已有嵌套布局沿用原路径。
+# 内核只使用单层布局。
 bin_kernel_path() {
-    local kernel=${CLASHCTL_KERNEL:-mihomo}
-    if [ "$kernel" = mihomo ] && [ ! -d "$BIN_BASE_DIR/mihomo" ]; then
-        printf '%s/mihomo\n' "$BIN_BASE_DIR"
-        return
-    fi
-    printf '%s/%s/%s\n' "$BIN_BASE_DIR" "$kernel" "$kernel"
+    printf '%s/mihomo\n' "$BIN_BASE_DIR"
 }
 BIN_KERNEL=$(bin_kernel_path)
 BIN_YQ="${BIN_BASE_DIR}/yq"
@@ -489,11 +484,7 @@ _append_source_block() {
             /^# >>> clashctl >>>$/ { managed=1; next }
             /^# <<< clashctl <<<$/{ managed=0; next }
             managed { next }
-            # 同时清除旧版（master 时代）遗留的裸引导行与历史导出
-            /^export CLASHCTL_HOME=/ { next }
-            /^\. \$CLASHCTL_HOME\/scripts\/cmd\/clashctl\.sh$/ { next }
-            /^\[ -s "\$CLASHCTL_HOME\/scripts\/cmd\/clashctl\.sh" \]/ { next }
-            { print }
+           { print }
         ' "$rc" >"$tmp" &&
             { [ ! -s "$tmp" ] || [ "$(tail -c 1 -- "$tmp" | wc -l)" -ne 0 ] || printf '\n' >>"$tmp"; } &&
             printf '%s\n' '# >>> clashctl >>>' "export CLASHCTL_HOME=$quoted" \
@@ -506,7 +497,7 @@ _append_source_block() {
     fi
 }
 
-# 只删除指向当前安装的完整托管块或相邻的旧版 export/source 两行。
+# 只删除指向当前安装的完整托管块。
 _remove_source_block() {
     local rc=$1 tmp mode quoted parse_rc=0
 
@@ -516,19 +507,8 @@ _remove_source_block() {
     mode=$(stat -c %a -- "$rc" 2>/dev/null) || mode=0600
     printf -v quoted '%q' "$CLASHCTL_HOME"
 
-    CLASHCTL_RC_EXPORT="export CLASHCTL_HOME=$quoted" \
-        CLASHCTL_RC_LEGACY="export CLASHCTL_HOME=$CLASHCTL_HOME" awk '
-        BEGIN {
-            expected = ENVIRON["CLASHCTL_RC_EXPORT"]
-            legacy = ENVIRON["CLASHCTL_RC_LEGACY"]
-            guard = "[ -s \"$CLASHCTL_HOME/scripts/cmd/clashctl.sh\" ] && . \"$CLASHCTL_HOME/scripts/cmd/clashctl.sh\""
-            source = ". $CLASHCTL_HOME/scripts/cmd/clashctl.sh"
-        }
-        pending != "" {
-            if ($0 == guard || $0 == source) { pending = ""; removed = 1; next }
-            print pending
-            pending = ""
-        }
+    CLASHCTL_RC_EXPORT="export CLASHCTL_HOME=$quoted" awk '
+        BEGIN { expected = ENVIRON["CLASHCTL_RC_EXPORT"] }
         !managed && $0 == "# >>> clashctl >>>" {
             managed = 1; owned = 0; foreign = 0
             buffered = $0 ORS
@@ -536,7 +516,7 @@ _remove_source_block() {
         }
         managed {
             buffered = buffered $0 ORS
-            if ($0 == expected || $0 == legacy) owned = 1
+            if ($0 == expected) owned = 1
             else if ($0 ~ /^export CLASHCTL_HOME=/ || $0 == "# >>> clashctl >>>") foreign = 1
             if ($0 == "# <<< clashctl <<<") {
                 if (owned && !foreign) removed = 1
@@ -545,11 +525,9 @@ _remove_source_block() {
             }
             next
         }
-        $0 == expected || $0 == legacy { pending = $0; next }
         { print }
         END {
             if (managed) printf "%s", buffered
-            if (pending != "") print pending
             if (!removed) exit 2
         }
     ' "$rc" >"$tmp" || parse_rc=$?
