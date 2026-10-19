@@ -21,7 +21,7 @@ jobs:
       - name: Install test dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends fish zsh
+          sudo apt-get install -y --no-install-recommends fish zsh gcc
           curl -fsSL --retry 3 https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64 -o "$RUNNER_TEMP/yq"
           printf '%s  %s\n' fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4 "$RUNNER_TEMP/yq" | sha256sum --check --status
           sudo install -m 0755 "$RUNNER_TEMP/yq" /usr/local/bin/yq
@@ -30,4 +30,4 @@ jobs:
       - name: Run regression suite
         run: sudo bash tests/run-all.sh
       - name: Run installation and service tests as a regular user
-        run: bash tests/run-all.sh install-update install-service systemd-user no-subscription
+        run: bash tests/run-all.sh install-update install-nested-mihomo install-service systemd-user no-subscription

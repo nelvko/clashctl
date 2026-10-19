@@ -47,7 +47,8 @@ _update_scripts() (
         return 1
     fi
     if [ -d "$CLASHCTL_HOME/bin/mihomo" ]; then
-        _install_reject_legacy "$CLASHCTL_HOME"
+        _ui_error '此安装需要通过新版安装器升级，请重新运行安装器'
+        _ui_detail '安装目录' "$CLASHCTL_HOME（使用 --home 指定）"
         return 1
     fi
     method=$(_install_method "$(cd -- "$CLASHCTL_HOME" && pwd -P)") || {
