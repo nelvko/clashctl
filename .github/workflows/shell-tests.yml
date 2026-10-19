@@ -18,6 +18,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          # 跨版本回归从 master 基线 cb609e8 提取真实旧 updater。
+          fetch-depth: 0
       - name: Install test dependencies
         run: |
           sudo apt-get update -qq
@@ -30,4 +32,4 @@ jobs:
       - name: Run regression suite
         run: sudo bash tests/run-all.sh
       - name: Run installation and service tests as a regular user
-        run: bash tests/run-all.sh install-update install-nested-mihomo install-service systemd-user no-subscription
+        run: bash tests/run-all.sh install-update install-migration install-nested-mihomo install-service systemd-user no-subscription

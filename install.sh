@@ -68,7 +68,112 @@ _install_commit_prepared_source() (
     committed=true
 )
 
-# 现代安装中的嵌套 Mihomo 单独迁移；其他旧格式只识别并提示。
+# 旧内核路径只由安装、迁移和卸载解释，日常命令只使用当前布局。
+_install_kernel_path() {
+    local home=$1 kernel=$2
+    case $kernel in
+    clash) printf '%s/bin/clash/clash\n' "$home" ;;
+    mihomo)
+        if [ -d "$home/bin/mihomo" ]; then printf '%s/bin/mihomo/mihomo\n' "$home";
+        else printf '%s/bin/mihomo\n' "$home"; fi
+        ;;
+    *) return 1 ;;
+    esac
+}
+
+_install_write_format() {
+    local temporary
+    temporary=$(mktemp "$CLASHCTL_HOME/.clashctl-format.XXXXXX") || return 1
+    if ! { chmod 0600 "$temporary" && printf '1\n' >"$temporary" &&
+        mv -fT -- "$temporary" "$CLASHCTL_HOME/.clashctl-format"; }; then
+        rm -f -- "$temporary"
+        return 1
+    fi
+}
+
+# 在安装事务内一次性转换数字 ID；日常订阅命令只读取 name 模型。
+_install_migrate_profiles() (
+    [ -f "$CLASH_PROFILES_META" ] || return 0
+    "$BIN_YQ" -e '([.profiles // [] | .[] | select(has("id"))] | length) > 0' \
+        "$CLASH_PROFILES_META" >/dev/null 2>&1 || return 0
+    local original=$CLASH_PROFILES_META temporary count i url name use mapped
+    temporary=$(mktemp "${original}.migrate.XXXXXX") || return 1
+    trap 'rm -f -- "$temporary"' EXIT
+    cp -p -- "$original" "$temporary" || return 1
+    local CLASH_PROFILES_META=$temporary
+    . "$CLASHCTL_SRC/scripts/cmd/sub.sh" || return 1
+    count=$("$BIN_YQ" '.profiles // [] | length' "$temporary") || return 1
+    for ((i = 0; i < count; i++)); do
+        IDX=$i "$BIN_YQ" -e '.profiles[env(IDX)] | has("name")' "$temporary" >/dev/null 2>&1 && continue
+        url=$(IDX=$i "$BIN_YQ" '.profiles[env(IDX)].url // ""' "$temporary") || return 1
+        name=$(_sub_unique_name "$(_sub_default_name "$url")") || return 1
+        IDX=$i PROFILE_NAME=$name "$BIN_YQ" -i '.profiles[env(IDX)].name = strenv(PROFILE_NAME)' "$temporary" || return 1
+    done
+    use=$("$BIN_YQ" '.use // "" | tostring' "$temporary") || return 1
+    if [[ $use =~ ^[0-9]+$ ]]; then
+        mapped=$(PROFILE_ID=$use "$BIN_YQ" '.profiles // [] | .[] | select((.id // "" | tostring) == strenv(PROFILE_ID)) | .name // ""' "$temporary" | head -n1)
+        [ -n "$mapped" ] || return 1
+        PROFILE_NAME=$mapped "$BIN_YQ" -i '.use = strenv(PROFILE_NAME)' "$temporary" || return 1
+    fi
+    "$BIN_YQ" -i 'del(.profiles[].id)' "$temporary" && mv -fT -- "$temporary" "$original"
+)
+
+_install_service_is_enabled() {
+    case $service_manager in
+    systemd | systemd-user) _service_systemd systemctl is-enabled --quiet "$CLASHCTL_KERNEL" ;;
+    openrc) rc-update show default | grep -Eq "^[[:space:]]*$CLASHCTL_KERNEL[[:space:]]" ;;
+    sysvinit)
+        if command -v chkconfig >/dev/null; then chkconfig --list "$CLASHCTL_KERNEL" | grep -q ':on';
+        else find /etc/rc[2-5].d -name "S*$CLASHCTL_KERNEL" -print -quit | grep -q .; fi
+        ;;
+    runit) [ -L "$(_service_runit_enable_link)" ] ;;
+    *) return 1 ;;
+    esac
+}
+
+# 仅迁移明确指向本安装的旧 export/source 对；不改用户的其他 Shell 设置。
+_install_migrate_shell_rc() (
+    detect_rc
+    local rc shell target temporary quoted parse_rc
+    printf -v quoted '%q' "$CLASHCTL_HOME"
+    for shell in BASH ZSH; do
+        rc=SHELL_RC_$shell
+        rc=${!rc:-}
+        [ -f "$rc" ] || continue
+        target=$(readlink -f -- "$rc") || return 1
+        temporary=$(mktemp "${target}.clashctl.XXXXXX") || return 1
+        parse_rc=0
+        CLASHCTL_RC_EXPORT="export CLASHCTL_HOME=$quoted" awk '
+            BEGIN { expected=ENVIRON["CLASHCTL_RC_EXPORT"] }
+            /^# >>> clashctl >>>$/ { managed=1 }
+            /^# <<< clashctl <<<$/{ managed=0; print; next }
+            managed { print; next }
+            pending != "" {
+                if ($0 == ". $CLASHCTL_HOME/scripts/cmd/clashctl.sh" ||
+                    $0 == "[ -s \"$CLASHCTL_HOME/scripts/cmd/clashctl.sh\" ] && . \"$CLASHCTL_HOME/scripts/cmd/clashctl.sh\"") {
+                    pending=""; removed=1; next
+                }
+                print pending; pending=""
+            }
+            $0 == expected { pending=$0; next }
+            { print }
+            END { if (pending != "") print pending; if (!removed) exit 2 }
+        ' "$target" >"$temporary" || parse_rc=$?
+        if [ "$parse_rc" -eq 2 ]; then rm -f -- "$temporary"; continue; fi
+        [ "$parse_rc" -eq 0 ] || { rm -f -- "$temporary"; return 1; }
+        if [ -n "${1:-}" ]; then
+            cp -p -- "$target" "$1/rc-$shell" || return 1
+            printf '%s\n' "$target" >"$1/rc-$shell.path" || return 1
+        fi
+        if ! { chmod "$(stat -c %a -- "$target")" "$temporary" &&
+            _append_source_block "$temporary" && mv -fT -- "$temporary" "$target"; }; then
+            rm -f -- "$temporary"
+            return 1
+        fi
+    done
+)
+
+# 现代安装可迁移；截止外的早期格式只识别并提示。
 _install_existing_kind() {
     local home=$1 owner mode path unsafe
     [ -d "$home" ] && [ ! -L "$home" ] || return 1
@@ -111,12 +216,13 @@ _install_reject_legacy() {
     return 1
 }
 
-# 独立事务只改变程序布局；不重新初始化订阅、Mixin、Shell 配置或自启设置。
-_install_upgrade_nested() (
+# 独立事务迁移内核及订阅索引；保留 Mixin、Shell 配置和原服务状态。
+_install_migrate_kernel() (
     local home=$1 local_source=$2 script_dir=$3 branch=$4 proxy=$5 requested_service=$6
     local work='' method target_commit='' state manager unit='' privileged=false
+    local old_kernel old_binary enabled=false retired=false nested=false
     local changed=false stopped=false complete=false profile_lock='' profile_pid='' profile_token=''
-    trap _install_nested_cleanup EXIT
+    trap _install_migration_cleanup EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
     trap 'exit 129' HUP
@@ -138,22 +244,39 @@ _install_upgrade_nested() (
     _source_validate "$work/source" || return 1
     export CLASHCTL_HOME="$home" CLASHCTL_SRC="$work/source"
     . "$work/source/scripts/preflight.sh" || return 1
-    [ "$CLASHCTL_HOME" = "$home" ] && [ "$CLASHCTL_SRC" = "$work/source" ] &&
-        [ "${CLASHCTL_KERNEL:-}" = mihomo ] || { printf '嵌套布局迁移只支持当前目录中的 Mihomo 安装\n' >&2; return 1; }
+    [ "$CLASHCTL_HOME" = "$home" ] && [ "$CLASHCTL_SRC" = "$work/source" ] || return 1
+    old_kernel=${CLASHCTL_KERNEL:-mihomo}
+    old_binary=$(_install_kernel_path "$home" "$old_kernel") || return 1
+    [ "$old_kernel" != mihomo ] || nested=true
     local path unexpected dirty stopped_state
-    for path in "$home" "$home/bin" "$home/bin/mihomo" "$home/data" "$home/resources"; do
+    for path in "$home" "$home/bin" "${old_binary%/*}" "$home/data" "$home/resources"; do
         _managed_directory_is_safe "$path" || { _ui_error "迁移目录的类型、归属或权限不安全：$path"; return 1; }
     done
-    unexpected=$(find "$home/bin/mihomo" -mindepth 1 -maxdepth 1 ! -name mihomo -print -quit) || return 1
-    [ -z "$unexpected" ] || { _ui_error "嵌套内核目录含有其他文件，请先备份并移出：$unexpected"; return 1; }
+    if [ "$nested" = true ]; then
+        unexpected=$(find "$home/bin/mihomo" -mindepth 1 -maxdepth 1 ! -name mihomo -print -quit) || return 1
+        [ -z "$unexpected" ] || { _ui_error "嵌套内核目录含有其他文件，请先备份并移出：$unexpected"; return 1; }
+    fi
     [ ! -e "$home/.clashctl-incomplete" ] && [ ! -e "$home/.clashctl-uninitialized" ] &&
         [ ! -L "$home/.clashctl-uninitialized" ] || {
-        _ui_error '嵌套布局安装尚未完成，请先使用原版本完成安装'; return 1;
+        _ui_error '原安装尚未完成，请先使用原版本完成安装'; return 1;
     }
-    BIN_KERNEL="$home/bin/mihomo/mihomo"
-    _component_file_is_safe "$BIN_KERNEL" 755 && _mihomo_binary_version "$BIN_KERNEL" >/dev/null || {
-        _ui_error '嵌套路径中没有可用的 Mihomo 内核'; return 1;
-    }
+    BIN_KERNEL=$old_binary
+    _component_file_is_safe "$BIN_KERNEL" 755 || { _ui_error '原内核文件不安全或不可执行'; return 1; }
+    if [ "$nested" = true ]; then
+        _mihomo_binary_version "$BIN_KERNEL" >/dev/null || { _ui_error '嵌套路径中没有可用的 Mihomo 内核'; return 1; }
+    else
+        # 新内核在临时目录准备并验证，下载失败不影响仍在运行的 Clash。
+        ( export CLASHCTL_KERNEL=mihomo
+          BIN_BASE_DIR="$work/components" BIN_KERNEL="$work/components/mihomo"
+          ZIP_BASE_DIR="$home/archives"
+          prepare_zip kernel && timeout 15 "$BIN_KERNEL" -d "$CLASH_RESOURCES_DIR" -f "$CLASH_CONFIG_RUNTIME" -t >/dev/null
+        ) || return 1
+        ( export CLASHCTL_KERNEL=mihomo
+          BIN_KERNEL="$home/bin/mihomo"
+          detect_service_manager
+          _service_check_conflict
+        ) || return 1
+    fi
     for path in "$CLASH_CONFIG_MIXIN" "$CLASH_CONFIG_RUNTIME"; do
         [ -s "$path" ] && [ ! -L "$path" ] || { _ui_error "迁移所需配置缺失或不是普通文件：$path"; return 1; }
     done
@@ -189,6 +312,7 @@ _install_upgrade_nested() (
     profile_pid=$_DIRECTORY_LOCK_PID profile_token=$_DIRECTORY_LOCK_TOKEN
     cp -a --reflink=auto -- "$home" "$work/previous" || return 1
     unit=$(_service_target) || unit=''
+    _install_service_is_enabled && enabled=true
     if [ -n "$unit" ] && [ -e "$unit" ]; then cp -p -- "$unit" "$work/service-unit" || return 1; fi
     stopped=true
     service_stop_checked || return 1
@@ -197,8 +321,17 @@ _install_upgrade_nested() (
         _ui_error '旧服务尚未完全停止，未切换内核布局'; return 1;
     }
     changed=true
-    mv -T -- "$home/bin/mihomo" "$work/nested" || return 1
-    cp -p -- "$work/nested/mihomo" "$home/bin/mihomo" || return 1
+    if [ "$nested" = true ]; then
+        mv -T -- "$home/bin/mihomo" "$work/nested" || return 1
+        cp -p -- "$work/nested/mihomo" "$home/bin/mihomo" || return 1
+    else
+        retired=true
+        uninstall_service || return 1
+        export CLASHCTL_KERNEL=mihomo
+        BIN_KERNEL="$home/bin/mihomo"
+        install -m 0755 -- "$work/components/mihomo" "$BIN_KERNEL" || return 1
+        _set_env CLASHCTL_KERNEL mihomo || return 1
+    fi
     # 使用既有更新器的托管文件保护，不扩大 Git/归档更新范围。
     . "$work/source/scripts/cmd/update.sh" || return 1
     if [ "$method" = git ]; then
@@ -214,32 +347,39 @@ _install_upgrade_nested() (
     if [ "${GH_PROXY:-}" != "$proxy" ]; then _set_env GH_PROXY "$proxy" || return 1; fi
     # 已核实的 unit 只改内核路径，保留自定义设置及自启链接。
     # 不删除 unit，避免 systemd 缓存或被遮盖的厂商 unit 造成假冲突。
-    if [ -n "$unit" ] && [ -e "$unit" ]; then
+    if [ "$nested" = true ] && [ -n "$unit" ] && [ -e "$unit" ]; then
         [ ! -L "$unit" ] && [ -f "$work/service-unit" ] && cmp -s -- "$unit" "$work/service-unit" || return 1
         sed "s#${home//./\\.}/bin/mihomo/mihomo#$home/bin/mihomo#g" "$work/service-unit" >"$work/new-unit" || return 1
         install -m "$(stat -c %a -- "$work/service-unit")" -- "$work/new-unit" "$unit" || return 1
         _service_daemon_reload || return 1
     else
         install_service || return 1
+        [ "$enabled" != true ] || service_enable || return 1
+    fi
+    if "$BIN_YQ" -e '([.profiles // [] | .[] | select(has("id"))] | length) > 0' "$CLASH_PROFILES_META" >/dev/null 2>&1; then
+        cp -p -- "$CLASH_PROFILES_META" "$work/profiles-before" || return 1
+        _install_migrate_profiles || return 1
     fi
     if [ "$state" = running ]; then
         if [ "$privileged" = true ]; then service_sudo_start; else service_start; fi || return 1
         [ "$(service_state)" = running ] || return 1
         [ "$privileged" = true ] || service_main_pid >/dev/null || return 1
     fi
+    _install_migrate_shell_rc "$work" || return 1
+    _install_write_format || return 1
     complete=true
     _install_ui_ok '安装已更新，原服务状态和用户配置已保留'
     printf '       升级前备份: %s\n' "$work/previous" >&2
 )
 
-_install_nested_cleanup() {
+_install_migration_cleanup() {
     local rc=$?
     trap - EXIT
     trap '' INT TERM HUP
     set +e
     # EXIT trap 中的裸 return 会继承触发 trap 的状态码；旧服务库也可能使用它。
     # 在同步子进程中恢复，父进程仍负责释放只属于自身的订阅锁。
-    _install_nested_restore "$rc"
+    _install_migration_restore "$rc"
     rc=$?
     if [ -z "$profile_pid" ] && [ -n "$profile_lock" ] &&
         [ "$profile_lock" = "${_DIRECTORY_LOCK_DIR:-}" ]; then
@@ -249,13 +389,20 @@ _install_nested_cleanup() {
     exit "$rc"
 }
 
-_install_nested_restore() (
-    local rc=$1 restored=true current_state
+_install_migration_restore() (
+    local rc=$1 restored=true current_state shell target
+    if [ "$complete" != true ]; then
+        for shell in BASH ZSH; do
+            if [ -f "$work/rc-$shell.path" ]; then
+                IFS= read -r target <"$work/rc-$shell.path"
+                cp -p -- "$work/rc-$shell" "$target" || restored=false
+            fi
+        done
+    fi
     if [ "$complete" != true ] && [ "$stopped" = true ]; then
         if [ "$changed" = true ]; then
             # 先确认当前路径的进程已停，才能替换目录，防止运行中的内核失去原路径。
-            BIN_KERNEL="$home/bin/mihomo"
-            [ ! -d "$BIN_KERNEL" ] || BIN_KERNEL+='/mihomo'
+            BIN_KERNEL=$(_install_kernel_path "$home" "$CLASHCTL_KERNEL") || return 1
             if [ -n "$unit" ] && { [ -L "$unit" ] || { [ -e "$unit" ] &&
                 ! cmp -s -- "$unit" "$work/service-unit" && ! _service_definition_is_owned "$unit"; }; }; then
                 restored=false
@@ -268,7 +415,14 @@ _install_nested_restore() (
                     service_stop && current_state=$(service_state) || restored=false
                 fi
                 [ "$current_state" = stopped ] && ! _service_privileged_marker_exists || restored=false
-                # 本事务不修改用户配置和缓存；保留备份后发生的编辑、下载和删除。
+                if [ "$retired" = true ] && [ "${CLASHCTL_KERNEL:-}" = mihomo ]; then
+                    uninstall_service || restored=false
+                fi
+                # 恢复本事务转换的索引，其余编辑、下载和删除保留。
+                if [ -f "$work/profiles-before" ]; then
+                    cp -p -- "$work/profiles-before" "$home/data/profiles.yaml" || restored=false
+                fi
+                # 本事务不修改其他用户配置和缓存；保留备份后发生的编辑、下载和删除。
                 # data 连同当前订阅锁一起移动，恢复后仍由本进程释放。
                 local path
                 for path in "$home" "$home/resources" "$work/previous" "$work/previous/resources"; do
@@ -288,9 +442,9 @@ _install_nested_restore() (
             fi
         fi
         if [ "$restored" = true ]; then
-            export CLASHCTL_HOME="$home" CLASHCTL_SRC="$home"
-            . "$home/scripts/preflight.sh" && _install_use_service "$manager" || restored=false
-            BIN_KERNEL="$home/bin/mihomo/mihomo"
+            export CLASHCTL_HOME="$home" CLASHCTL_SRC="$work/source"
+            . "$work/source/scripts/preflight.sh" && _install_use_service "$manager" || restored=false
+            CLASHCTL_KERNEL=$old_kernel BIN_KERNEL=$old_binary
             if [ -n "$unit" ]; then
                 if [ -f "$work/service-unit" ]; then
                     cp -p -- "$work/service-unit" "$unit" || restored=false
@@ -299,6 +453,7 @@ _install_nested_restore() (
                 fi
                 _service_daemon_reload || restored=false
             fi
+            if [ "$retired" = true ] && [ "$enabled" = true ]; then service_enable || restored=false; fi
             if [ "$restored" = true ] && [ "$state" = running ]; then
                 if [ "$privileged" = true ]; then service_sudo_start; else service_start; fi || restored=false
             fi
@@ -724,6 +879,8 @@ _install_initialize() {
     # 命令加载器会重新加载 service.sh，清空之前检测到的服务方式与路径。
     detect_service_manager
 
+    _with_profiles_lock _install_migrate_profiles || return 1
+
     # 密钥直接写入 Mixin，无主配置时不生成 runtime。
     secret=$("$BIN_YQ" '.secret // ""' "$CLASH_CONFIG_MIXIN") || return 1
     if [ -z "$secret" ]; then
@@ -775,6 +932,7 @@ _install_initialize() {
         ;;
     esac
     rc=0
+    _install_migrate_shell_rc || return 1
     apply_rc || rc=$?
     [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ] || return "$rc"
     return 0
@@ -795,7 +953,7 @@ main() (
     local proxy=${GH_PROXY:-} proxy_set=${GH_PROXY+x} stage='' arg option value_name method
     local requested_timeout=${CLASHCTL_DOWNLOAD_TIMEOUT-} timeout_set=${CLASHCTL_DOWNLOAD_TIMEOUT+x}
     local local_source=false script_dir='' existing_kind=''
-    local prepared_archives=false replacing_clash=false
+    local prepared_archives=false
     local CLASHCTL_INSTALL_SOURCE=''
     local service_switch_pending=false service_previous_manager='' service_previous_init='' service_selected_manager=''
     local service_previous_active=false service_previous_enabled=false service_previous_privileged=false
@@ -962,7 +1120,6 @@ HELP
                 . "$install_home/.env" || return 1
                 kernel=${requested_kernel:-${CLASHCTL_KERNEL:-mihomo}}
                 if [ "$kernel" = clash ]; then kernel=mihomo; fi
-                [ "${CLASHCTL_KERNEL:-}" != clash ] || replacing_clash=true
                 branch=${requested_branch:-${CLASHCTL_UPDATE_BRANCH:-master}}
                 [ "$proxy_set" = x ] && proxy=$requested_proxy || proxy=${GH_PROXY:-}
             else
@@ -970,10 +1127,10 @@ HELP
                 branch=${branch:-master}
             fi
             export CLASHCTL_HOME="$install_home" CLASHCTL_SRC="$install_home"
-            if [ "$existing_kind" = modern-nested ]; then
+            if [ "$existing_kind" = modern-nested ] || [ "${CLASHCTL_KERNEL:-}" = clash ]; then
                 [ -z "$subscription" ] || { printf '请先完成布局升级，再添加订阅\n' >&2; return 1; }
                 _install_intro '更新现有安装' "$install_home" "$home_source" "$local_source" "$branch"
-                _install_upgrade_nested "$install_home" "$local_source" "$script_dir" "$branch" "$proxy" "$requested_service"
+                _install_migrate_kernel "$install_home" "$local_source" "$script_dir" "$branch" "$proxy" "$requested_service"
                 return
             fi
             local refresh_source=true
@@ -989,36 +1146,6 @@ HELP
                 printf 'Git 安装不能直接覆盖为未提交的本地源码；请使用远端更新或另选安装目录\n' >&2
                 return 1
             fi
-            if [ "$replacing_clash" = true ]; then
-                if [ "$local_source" = true ]; then
-                    # 停止已退役的内核前，先排除源码和本地修改等确定性错误。
-                    [ -z "$stage" ] || rm -rf -- "$stage"
-                    stage=$(mktemp -d "${install_home}.download.XXXXXX") || return 1
-                    _install_prepare_source "$stage" "$branch" "$proxy" true "$script_dir" || return 1
-                    CLASHCTL_INSTALL_SOURCE=$stage
-                    script_dir=$stage
-                fi
-                if [ "$method" = archive ]; then
-                    [ -f "$install_home/.clashctl-files" ] && [ ! -L "$install_home/.clashctl-files" ] &&
-                        (cd -- "$install_home" && sha256sum --status -c .clashctl-files) || {
-                        printf '安装目录存在本地代码修改或文件清单无效，未停止 clash\n' >&2
-                        return 1
-                    }
-                else
-                    local dirty
-                    dirty=$(git -C "$install_home" status --porcelain --untracked-files=no) || return 1
-                    [ -z "$dirty" ] || return 1
-                fi
-                (
-                    # 先按旧安装的完整参数退役 clash，再写入新的内核选项。
-                    export CLASHCTL_HOME="$install_home" CLASHCTL_SRC="$install_home"
-                    . "$install_home/scripts/preflight.sh" || return 1
-                    [ "$CLASHCTL_HOME" = "$install_home" ] && [ "$CLASHCTL_SRC" = "$install_home" ] || return 1
-                    uninstall_service || return 1
-                    . "$CLASHCTL_INSTALL_SOURCE/scripts/lib/common.sh" || return 1
-                    _set_env CLASHCTL_KERNEL mihomo
-                ) || return 1
-            fi
             if [ "$refresh_source" = true ]; then
                 _install_refresh_current "$install_home" "$local_source" "$script_dir" "$branch" "$proxy" || return 1
             fi
@@ -1030,10 +1157,12 @@ HELP
             return 1
         fi
     elif [ "$install_home" = "$HOME/.clashctl" ] && [ -d "$HOME/clashctl" ]; then
-        if [ "$(_install_existing_kind "$HOME/clashctl")" = current ]; then
+        case "$(_install_existing_kind "$HOME/clashctl")" in
+        current | modern-nested)
             printf '已在旧默认路径发现新版安装，请使用 --home %s 后重试\n' "$HOME/clashctl" >&2
-            return 1
-        elif [ -f "$HOME/clashctl/.env" ] && [ -d "$HOME/clashctl/scripts" ]; then
+            return 1 ;;
+        esac
+        if [ -f "$HOME/clashctl/.env" ] && [ -d "$HOME/clashctl/scripts" ]; then
             _install_reject_legacy "$HOME/clashctl"
             return 1
         fi
@@ -1105,6 +1234,7 @@ HELP
         fi
         return 1
     fi
+    _install_write_format || return 1
     rm -f -- "$install_home/.clashctl-incomplete" || return 1
     service_switch_pending=false
     _install_complete

@@ -293,6 +293,7 @@ for shell in bash zsh fish; do
     home_dir="$WORK_DIR/$shell"
     mkdir -p "$home_dir/bin"
     cp -a "$REPO_DIR/scripts" "$home_dir/"
+    printf '1\n' >"$home_dir/.clashctl-format"
     cp "$WORK_DIR/services.sh" "$home_dir/scripts/lib/zz-test.sh"
     printf 'CLASHCTL_KERNEL=mihomo\n' >"$home_dir/.env"
     printf '#!/bin/sh\nprintf "7890\\t0\\t0\\t*\\tfalse\\t\\n"\n' >"$home_dir/bin/yq"

@@ -141,6 +141,8 @@ main() (
         mihomo | clash) ;;
         *) _install_ui_error '.env 中缺少有效的内核信息，已保留安装目录'; return 1 ;;
         esac
+        # 尚未迁移的安装仍可卸载；旧路径识别由安装器集中管理。
+        BIN_KERNEL=$(_install_kernel_path "$install_home" "$CLASHCTL_KERNEL") || return 1
         _uninstall_ui_log info '停止内核并移除服务'
         uninstall_service || {
             _uninstall_ui_log error '停止内核或移除服务失败，卸载中止，已保留安装目录'

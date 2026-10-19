@@ -6,6 +6,7 @@ test.sh
 # 安装期物化与用户数据（home 内不跟踪）
 data/
 .clashctl-install
+.clashctl-format
 .clashctl-uninitialized
 .clashctl-incomplete
 .clashctl-files

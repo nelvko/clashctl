@@ -25,6 +25,7 @@ for shell in bash zsh; do
         fi
         printf '%s\n%s\n' "$home_dir" "$method" >"$home_dir/.clashctl-install"
         printf 'CLASHCTL_KERNEL=mihomo\nCLASHCTL_UPDATE_BRANCH=master\nGH_PROXY=\n' >"$home_dir/.env"
+        printf '1\n' >"$home_dir/.clashctl-format"
     done
 done
 printf 'CLASHCTL_TEST_VERSION=new\n' >"$SOURCE_REPO/scripts/cmd/version.sh"
@@ -86,6 +87,7 @@ for shell in bash zsh; do
         "$REAL_GIT" -C "$home_dir" reset --hard -q "$INITIAL_HEAD"
         printf '%s\ngit\n' "$home_dir" >"$home_dir/.clashctl-install"
         printf 'CLASHCTL_KERNEL=mihomo\nCLASHCTL_UPDATE_BRANCH=master\nGH_PROXY=\n' >"$home_dir/.env"
+        printf '1\n' >"$home_dir/.clashctl-format"
         mkdir "$home_dir/data"
         printf 'user runtime\n' >"$home_dir/data/private"
         printf 'untracked user file\n' >"$home_dir/user-notes"
@@ -139,7 +141,7 @@ for kernel in clash mihomo; do
         if PATH="$WORK_DIR/bin:$PATH" CLASHCTL_HOME="$home_dir" bash -c '
             . "$CLASHCTL_HOME/scripts/cmd/clashctl.sh" && clashctl update
         ' >"$WORK_DIR/retired.out" 2>&1; then fail 'script update accepted retired kernel/layout'; fi
-        grep -Eq '安装器|旧版安装' "$WORK_DIR/retired.out" || fail 'retired update omitted recovery instructions'
+        grep -Fq '安装迁移' "$WORK_DIR/retired.out" || fail 'retired update omitted recovery instructions'
         [ "$(sha256sum "$home_dir/scripts/cmd/version.sh")" = "$before" ] || fail 'rejected update changed source'
     done
 done

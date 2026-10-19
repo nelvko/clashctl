@@ -42,15 +42,6 @@ _update_scripts() (
     install_source=${CLASHCTL_INSTALL_SOURCE:-$CLASHCTL_HOME}
     # shellcheck source=/dev/null
     . "$install_source/install.sh" || return 1
-    if [ "${CLASHCTL_KERNEL:-mihomo}" != mihomo ]; then
-        _ui_error '此安装仍使用旧内核，请重新运行新版安装器切换到 mihomo 后再更新脚本'
-        return 1
-    fi
-    if [ -d "$CLASHCTL_HOME/bin/mihomo" ]; then
-        _ui_error '此安装需要通过新版安装器升级，请重新运行安装器'
-        _ui_detail '安装目录' "$CLASHCTL_HOME（使用 --home 指定）"
-        return 1
-    fi
     method=$(_install_method "$(cd -- "$CLASHCTL_HOME" && pwd -P)") || {
         _ui_error '缺少匹配的安装标记，已停止更新'
         return 1

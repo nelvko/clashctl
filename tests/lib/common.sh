@@ -49,6 +49,7 @@ make_fake_home() {
     mkdir -p "$1/"{scripts,bin,data}
     cp -r "$REPO_DIR/scripts/." "$1/scripts/"
     printf 'CLASHCTL_KERNEL=mihomo\nINIT_TYPE=nohup\n' >"$1/.env"
+    printf '1\n' >"$1/.clashctl-format"
 }
 
 init_fixture_repo() {

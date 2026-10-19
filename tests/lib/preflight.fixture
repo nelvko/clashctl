@@ -1,11 +1,13 @@
 # 复制进假安装，运行时不依赖 tests/ 目录。
 CLASH_DATA_DIR="$CLASHCTL_HOME/data"
 CLASH_PROFILES_DIR="$CLASH_DATA_DIR/profiles"
+CLASH_PROFILES_META="$CLASH_DATA_DIR/profiles.yaml"
 CLASH_RESOURCES_DIR="$CLASHCTL_HOME/resources"
 CLASH_CONFIG_BASE="$CLASH_DATA_DIR/config.yaml"
 CLASH_CONFIG_MIXIN="$CLASH_DATA_DIR/mixin.yaml"
 BIN_YQ=fixture_yq
 fixture_yq() {
+    if [ "${1:-}" = -e ] && [[ ${2:-} == *'select(has("id"))'* ]]; then return 1; fi
     if [ "${1:-}" = '.mode // "rule"' ]; then
         if [ -s "$CLASH_CONFIG_BASE" ]; then printf rule; else printf direct; fi
     else
@@ -14,3 +16,4 @@ fixture_yq() {
 }
 valid_required() { :; }
 _service_check_conflict() { :; }
+_with_profiles_lock() { "$@"; }

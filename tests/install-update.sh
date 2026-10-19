@@ -33,7 +33,7 @@ cp "$REPO_DIR/install.sh" "$FIXTURE/"
 cp "$REPO_DIR/uninstall.sh" "$FIXTURE/"
 cp "$REPO_DIR/.env.example" "$FIXTURE/"
 cp "$REPO_DIR/resources/"{mixin.yaml.example,profiles.yaml} "$FIXTURE/resources/"
-printf 'data/\nbin/\n.env\n.clashctl-install\n.clashctl-uninitialized\n.clashctl-incomplete\n.clashctl-files\n' >"$FIXTURE/.gitignore"
+printf 'data/\nbin/\n.env\n.clashctl-install\n.clashctl-format\n.clashctl-uninitialized\n.clashctl-incomplete\n.clashctl-files\n' >"$FIXTURE/.gitignore"
 cat >"$FIXTURE/scripts/preflight.sh" <<'STUB'
 [ ! -f "$CLASHCTL_HOME/.env" ] || . "$CLASHCTL_HOME/.env"
 . "$CLASHCTL_SRC/scripts/lib/common.sh"
@@ -751,43 +751,6 @@ grep -q '^_directory_lock_acquire()' "$previous_source_git/scripts/lib/operation
     fail 'piped update did not replace the old protocol library'
 [ -z "$(find "$WORK_DIR" -maxdepth 1 -type d -name 'previous-source-git.download.*' -print -quit)" ] ||
     fail 'piped update retained bootstrap source'
-# 现代格式中的 clash 必须先停止并注销，再转换内核字段。
-clash_home="$WORK_DIR/retired-clash"
-cp -a "$local_home" "$clash_home"
-printf '%s\narchive\n' "$clash_home" >"$clash_home/.clashctl-install"
-printf 'CLASHCTL_KERNEL=clash\n' >>"$clash_home/.env"
-cp "$clash_home/.env" "$WORK_DIR/clash-env.before"
-cp "$clash_home/install.sh" "$WORK_DIR/clash-install.before"
-clash_git="$WORK_DIR/retired-clash-git"
-cp -a "$CLASHCTL_HOME" "$clash_git"
-printf '%s\ngit\n' "$clash_git" >"$clash_git/.clashctl-install"
-printf 'CLASHCTL_KERNEL=clash\n' >>"$clash_git/.env"
-cp "$clash_git/.env" "$WORK_DIR/clash-git-env.before"
-if CLASHCTL_HOME="$clash_git" bash "$local_source/install.sh" --local >"$WORK_DIR/clash-git.out" 2>&1; then
-    fail 'local source overwrote a Git installation during clash conversion'
-fi
-cmp "$clash_git/.env" "$WORK_DIR/clash-git-env.before" || fail 'rejected local Git update changed the kernel option'
-[ ! -e "$clash_git/data/clash-retired" ] || fail 'rejected local Git update retired clash'
-invalid_source="$WORK_DIR/invalid-conversion-source"
-cp -a "$local_source" "$invalid_source"
-printf 'broken() {\n' >"$invalid_source/scripts/invalid.sh"
-if CLASHCTL_HOME="$clash_home" bash "$invalid_source/install.sh" --local >"$WORK_DIR/clash-invalid.out" 2>&1; then
-    fail 'clash conversion accepted invalid source'
-fi
-cmp "$clash_home/.env" "$WORK_DIR/clash-env.before" || fail 'invalid conversion source changed the kernel option'
-[ ! -e "$clash_home/data/clash-retired" ] || fail 'invalid conversion source retired clash'
-if FAIL_STOP=1 CLASHCTL_HOME="$clash_home" bash "$local_source/install.sh" --local >"$WORK_DIR/clash-stop-failed.out" 2>&1; then
-    fail 'clash conversion ignored service stop failure'
-fi
-cmp "$clash_home/.env" "$WORK_DIR/clash-env.before" || fail 'failed clash stop changed environment'
-cmp "$clash_home/install.sh" "$WORK_DIR/clash-install.before" || fail 'failed clash stop updated source'
-CLASHCTL_HOME="$clash_home" bash "$local_source/install.sh" --local --kernel mihomo >"$WORK_DIR/clash-retired.out" 2>&1 || {
-    cat "$WORK_DIR/clash-retired.out"; fail 'modern clash installation was not converted'
-}
-[ -f "$clash_home/data/clash-retired" ] || fail 'clash service was not retired before conversion'
-[ -f "$clash_home/data/started" ] || fail 'converted installation did not start mihomo'
-bash -c '. "$1"; [ "$CLASHCTL_KERNEL" = mihomo ]' _ "$clash_home/.env" || fail 'converted kernel option was not persisted'
-
 bash "$local_home/uninstall.sh" --yes >"$WORK_DIR/local-uninstall.out" 2>&1 || fail 'local installation could not be uninstalled'
 [ -f "$local_source/install.sh" ] || fail 'uninstall removed local source'
 

@@ -301,6 +301,7 @@ systemctl() {
 clashstart() { service_is_active && return 0; service_start && service_enable; }
 clashsub() { printf 'configured\n' >"$CLASH_CONFIG_BASE"; service_start; }
 apply_rc() { touch "$CLASH_DATA_DIR/shell-ready"; }
+detect_rc() { SHELL_RC_BASH='' SHELL_RC_ZSH='' SHELL_RC_FISH=''; }
 _install_ui_step() { :; }
 _install_ui_ok() { printf '%s\n' "$*"; }
 FIXTURE
@@ -334,7 +335,7 @@ LOADER
         CLASHCTL_INSTALL_SOURCE='' USER_MANAGER_AVAILABLE=$available FIXTURE_TUN=$tun
         subscription_arg=''
         [ "$subscribing" != yes ] || subscription_arg=https://example.invalid/install-subscription
-        _install_initialize mihomo master '' '' '' "$subscription_arg" "$requested"
+        _install_initialize mihomo master '' '' '' "$subscription_arg" "$requested" || exit 1
         _install_next_step bash >"$initialize_home/footer" 2>&1
     ) >"$initialize_home/output" 2>&1 || {
         cat "$initialize_home/output" >&2

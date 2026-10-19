@@ -30,10 +30,12 @@ cleanup_hook() {
         fi
     done
     for home in "${HOMES[@]}"; do
-        if [ -f "$home/data/mihomo.pid" ]; then
-            bash -c '. "$1/scripts/lib/service-process.sh"; _service_process_stop_recorded "$1/data/mihomo.pid"' \
-                _ "$home" >/dev/null 2>&1 || true
-        fi
+        for kernel in mihomo clash; do
+            if [ -f "$home/data/$kernel.pid" ]; then
+                bash -c '. "$1/scripts/lib/service-process.sh"; _service_process_stop_recorded "$2"' \
+                    _ "$home" "$home/data/$kernel.pid" >/dev/null 2>&1 || true
+            fi
+        done
     done
     for pid in "${PIDS[@]}"; do
         # These are unreaped direct children, so their PIDs cannot have been reused.
@@ -76,7 +78,7 @@ cat >"$NESTED_SOURCE/scripts/lib/zz-native-fixture.sh" <<'SH'
 eval "$(declare -f _service_target | sed '1s/_service_target/_fixture_original_service_target/')"
 _service_target() {
     if [ -n "${NESTED_UNIT_DIR:-}" ]; then
-        printf '%s/mihomo.service\n' "$NESTED_UNIT_DIR"
+        printf '%s/%s.service\n' "$NESTED_UNIT_DIR" "$CLASHCTL_KERNEL"
     else
         _fixture_original_service_target
     fi
@@ -120,10 +122,17 @@ set -eu
 printf '%s\n' "$*" >>"$NESTED_UNIT_DIR/calls"
 . "$NESTED_SOURCE/scripts/lib/service-process.sh"
 record="$NESTED_UNIT_DIR/process"
+kernel=${CLASHCTL_KERNEL:-mihomo}
+for argument in "$@"; do
+    case $argument in mihomo | mihomo.service) kernel=mihomo ;; clash | clash.service) kernel=clash ;; esac
+done
 case "${1:-}" in
 show)
     case "$*" in
-    *FragmentPath*) cat "$NESTED_UNIT_DIR/fragment" ;;
+    *FragmentPath*)
+        fragment=$(cat "$NESTED_UNIT_DIR/fragment")
+        if [ "${fragment##*/}" = "$kernel.service" ]; then printf '%s\n' "$fragment"; fi
+        ;;
     *MainPID*) _service_process_record_pid "$record" 2>/dev/null || printf '0\n' ;;
     *) exit 92 ;;
     esac
@@ -143,7 +152,7 @@ is-active)
         exit 3
     fi
     ;;
-is-enabled) [ -L "$NESTED_UNIT_DIR/default.target.wants/mihomo.service" ] ;;
+is-enabled) [ -L "$NESTED_UNIT_DIR/default.target.wants/$kernel.service" ] ;;
 daemon-reload)
     if [ "${NESTED_RELOAD_FAIL_ONCE:-0}" = 1 ] && [ ! -e "$NESTED_UNIT_DIR/reload-failed" ]; then
         : >"$NESTED_UNIT_DIR/reload-failed"
@@ -154,9 +163,9 @@ daemon-reload)
         printf '%s\n' "$PPID" >"$NESTED_UNIT_DIR/blocked.pid"
         while [ ! -e "$NESTED_UNIT_DIR/release" ]; do sleep 0.02; done
     fi
-    if [ -f "$NESTED_UNIT_DIR/mihomo.service" ]; then
-        cp "$NESTED_UNIT_DIR/mihomo.service" "$NESTED_UNIT_DIR/cached-unit"
-        printf '%s/mihomo.service\n' "$NESTED_UNIT_DIR" >"$NESTED_UNIT_DIR/fragment"
+    if [ -f "$NESTED_UNIT_DIR/$kernel.service" ]; then
+        cp "$NESTED_UNIT_DIR/$kernel.service" "$NESTED_UNIT_DIR/cached-unit"
+        printf '%s/%s.service\n' "$NESTED_UNIT_DIR" "$kernel" >"$NESTED_UNIT_DIR/fragment"
     else
         rm -f "$NESTED_UNIT_DIR/cached-unit"
         : >"$NESTED_UNIT_DIR/fragment"
@@ -185,9 +194,9 @@ stop)
     ;;
 enable)
     mkdir -p "$NESTED_UNIT_DIR/default.target.wants"
-    ln -sf ../mihomo.service "$NESTED_UNIT_DIR/default.target.wants/mihomo.service"
+    ln -sf ../"$kernel".service "$NESTED_UNIT_DIR/default.target.wants/$kernel.service"
     ;;
-disable) rm -f "$NESTED_UNIT_DIR/default.target.wants/mihomo.service" ;;
+disable) rm -f "$NESTED_UNIT_DIR/default.target.wants/$kernel.service" ;;
 *) exit 93 ;;
 esac
 SH
@@ -623,4 +632,110 @@ INIT_TYPE=nohup CLASHCTL_HOME="$home" bash "$NESTED_SOURCE/install.sh" --local -
 [ -f "$home/bin/mihomo" ] || fail 'fresh installation did not use the flat layout'
 assert_recorded_kernel "$home" mihomo
 assert_absent "$home/.clashctl-incomplete" 'fresh installation was left incomplete'
+assert_eq 1 "$(cat "$home/.clashctl-format")" 'fresh installation format'
+
+# Clash 转换同样先准备源码和 Mihomo，再切换；源下载、组件下载、启动失败都可恢复。
+for method in git archive; do
+    for scenario in fetch component start running stopped; do
+        home="$WORK_DIR/clash-$method-$scenario"
+        make_nested_install "$method" "$home"
+        mv "$home/bin/mihomo" "$home/bin/clash"
+        mv "$home/bin/clash/mihomo" "$home/bin/clash/clash"
+        sed -i 's/CLASHCTL_KERNEL=mihomo/CLASHCTL_KERNEL=clash/' "$home/.env"
+        if [ "$scenario" = start ] || [ "$scenario" = running ]; then
+            yq -i '.use = 1 | .profiles[0].id = 1 | del(.profiles[0].name)' "$home/data/profiles.yaml"
+        fi
+        cp "$home/data/profiles.yaml" "$WORK_DIR/clash.profiles"
+        gzip -c "$WORK_DIR/kernel" >"$home/archives/mihomo-linux-$arch-v1.19.27.gz"
+        if [ "$scenario" != stopped ]; then
+            "$home/bin/clash/clash" -d "$home/resources" -f "$home/data/runtime.yaml" &
+            old_pid=$!
+            PIDS+=("$old_pid")
+            _service_process_record_create "$home/data/clash.pid" "$old_pid" "$home/bin/clash/clash" \
+                "$home/bin/clash/clash" -d "$home/resources" -f "$home/data/runtime.yaml" || fail 'could not record old Clash'
+            cp "$home/data/clash.pid" "$WORK_DIR/clash.record"
+        fi
+        cp "$home/.env" "$WORK_DIR/clash.env"
+        case $scenario in
+        fetch)
+            # archive 使用 --local 没有网络源码获取，因此只校验 Git 路径。
+            [ "$method" = git ] || continue
+            if NESTED_FAIL_FETCH=1 run_upgrade "$method" "$home" >"$WORK_DIR/clash.out" 2>&1; then fail 'Clash source failure was accepted'; fi
+            ;;
+        component)
+            rm "$home/archives/mihomo-linux-$arch-v1.19.27.gz"
+            if run_upgrade "$method" "$home" >"$WORK_DIR/clash.out" 2>&1; then fail 'Clash component failure was accepted'; fi
+            ;;
+        start)
+            if NESTED_FAIL_FLAT_START=1 run_upgrade "$method" "$home" >"$WORK_DIR/clash.out" 2>&1; then fail 'Clash start failure was accepted'; fi
+            assert_restored_report "$WORK_DIR/clash.out"
+            ;;
+        running | stopped)
+            run_upgrade "$method" "$home" >"$WORK_DIR/clash.out" 2>&1 || { cat "$WORK_DIR/clash.out"; fail 'Clash conversion failed'; }
+            assert_eq mihomo "$(bash -c '. "$1"; printf %s "$CLASHCTL_KERNEL"' _ "$home/.env")" 'converted kernel option'
+            assert_eq 1 "$(cat "$home/.clashctl-format")" 'converted installation format'
+            if [ "$scenario" = running ]; then
+                assert_eq fixture.invalid "$(yq '.use' "$home/data/profiles.yaml")" 'converted current subscription'
+                assert_eq false "$(yq '.profiles[0] | has("id")' "$home/data/profiles.yaml")" 'converted subscription id'
+            fi
+            if [ "$scenario" = running ]; then assert_recorded_kernel "$home" mihomo;
+            else assert_absent "$home/data/mihomo.pid" 'stopped Clash migration started Mihomo'; fi
+            continue
+            ;;
+        esac
+        cmp "$WORK_DIR/clash.env" "$home/.env" || fail 'failed conversion changed the old kernel option'
+        cmp "$WORK_DIR/clash.profiles" "$home/data/profiles.yaml" || fail 'failed conversion changed subscription metadata'
+        assert_absent "$home/.clashctl-format" 'failed conversion wrote the current format'
+        assert_original_source "$method" "$home"
+        pid=$(_service_process_record_pid "$home/data/clash.pid") || { cat "$WORK_DIR/clash.out"; fail 'failed conversion lost the old Clash process'; }
+        expected=$(_service_process_values_argv_hex "$home/bin/clash/clash" -d "$home/resources" -f "$home/data/runtime.yaml")
+        _service_process_snapshot "$pid" "$home/bin/clash/clash" "$expected" || fail 'rollback started the wrong old kernel'
+        if [ "$scenario" != start ]; then
+            assert_eq "$old_pid" "$pid" 'preparation failure preserved original PID'
+            cmp "$WORK_DIR/clash.record" "$home/data/clash.pid" || fail 'preparation failure changed the old record'
+        fi
+    done
+done
+# 原生服务切换验证 unit 的注销、自启保留和启动失败恢复。
+for scenario in running stopped start; do
+    home="$WORK_DIR/clash-native-$scenario"
+    directory="$WORK_DIR/clash-native-$scenario-unit"
+    make_native_install "$home" "$directory"
+    mv "$home/bin/mihomo" "$home/bin/clash"
+    mv "$home/bin/clash/mihomo" "$home/bin/clash/clash"
+    sed -i 's/CLASHCTL_KERNEL=mihomo/CLASHCTL_KERNEL=clash/' "$home/.env"
+    sed "s#$home/bin/mihomo/mihomo#$home/bin/clash/clash#g" "$directory/original-unit" >"$directory/clash.service"
+    rm "$directory/mihomo.service" "$directory/default.target.wants/mihomo.service"
+    if [ "$scenario" != stopped ]; then
+        ln -s ../clash.service "$directory/default.target.wants/clash.service"
+    fi
+    cp "$directory/clash.service" "$directory/cached-unit"
+    cp "$directory/clash.service" "$directory/original-clash-unit"
+    printf '%s/clash.service\n' "$directory" >"$directory/fragment"
+    gzip -c "$WORK_DIR/kernel" >"$home/archives/mihomo-linux-$arch-v1.19.27.gz"
+    if [ "$scenario" != stopped ]; then NESTED_UNIT_DIR="$directory" systemctl start clash; fi
+    if [ "$scenario" = start ]; then
+        if NESTED_UNIT_DIR="$directory" NESTED_FAIL_FLAT_START=1 run_upgrade archive "$home" >"$WORK_DIR/clash-native.out" 2>&1; then
+            fail 'native Clash startup failure was accepted'
+        fi
+        assert_restored_report "$WORK_DIR/clash-native.out"
+        cmp "$directory/original-clash-unit" "$directory/clash.service" || fail 'rollback changed the old unit'
+        [ -L "$directory/default.target.wants/clash.service" ] || fail 'rollback lost old autostart'
+        assert_absent "$directory/mihomo.service" 'rollback retained the new unit'
+        assert_native_running "$home" "$directory" clash/clash
+    else
+        NESTED_UNIT_DIR="$directory" run_upgrade archive "$home" >"$WORK_DIR/clash-native.out" 2>&1 || {
+            cat "$WORK_DIR/clash-native.out"; fail 'native Clash conversion failed'
+        }
+        assert_absent "$directory/clash.service" 'conversion retained the retired unit'
+        assert_absent "$directory/default.target.wants/clash.service" 'conversion retained old autostart'
+        if [ "$scenario" = running ]; then
+            assert_native_running "$home" "$directory" mihomo
+            [ -L "$directory/default.target.wants/mihomo.service" ] || fail 'conversion lost autostart'
+        else
+            assert_absent "$directory/process" 'stopped native conversion started a process'
+            assert_absent "$directory/default.target.wants/mihomo.service" 'disabled native conversion enabled autostart'
+        fi
+    fi
+done
 printf 'install-nested-mihomo: ok (uid=%s)\n' "$(id -u)"
