@@ -31,6 +31,24 @@ printf '%s\n' 'CLASHCTL_TEST_LOADED=1' >"$CLASHCTL_CMD_DIR/clashctl.sh"
 printf '%s\n' '# fish completion fixture' >"$CLASHCTL_CMD_DIR/clashctl.fish"
 export CLASHCTL_CMD_DIR CLASHCTL_COLOR=never
 
+# 环境文件保留无末尾换行的用户内容，值按 Shell 字面量写入；失败保留原件。
+env_file="$WORK_DIR/settings.env"
+printf '# user settings\nKEEP=unchanged' >"$env_file"
+literal=$'spaces \'quote\' $(literal) \\ path\nsecond line'
+CLASHCTL_ENV_PATH="$env_file" _set_env SETTING "$literal"
+assert_eq "$literal" "$(bash -c '. "$1"; printf "%s" "$SETTING"' _ "$env_file")" 'environment value round trip'
+CLASHCTL_ENV_PATH="$env_file" _set_env SETTING replaced
+assert_eq 1 "$(grep -c '^SETTING=' "$env_file")" 'environment updates replace the previous value'
+assert_eq 600 "$(stat -c %a "$env_file")" 'environment permissions'
+grep -Fxq KEEP=unchanged "$env_file" || fail 'environment update changed an unrelated setting'
+cp "$env_file" "$WORK_DIR/settings.expected"
+if (
+    chmod() { return 1; }
+    CLASHCTL_ENV_PATH="$env_file" _set_env SETTING failed
+); then fail 'environment write failure succeeded'; fi
+cmp "$env_file" "$WORK_DIR/settings.expected" || fail 'failed environment update changed the original'
+[ -z "$(find "$WORK_DIR" -name 'settings.env.tmp.*' -print -quit)" ] || fail 'failed environment update left a temporary file'
+
 # 保存真实 detect_rc（随后用参数化桩覆盖；文件尾部恢复以验证 fish 判定）
 _real_detect_rc=$(declare -f detect_rc)
 
@@ -54,6 +72,7 @@ assert_eq 0 "${CLASHCTL_TEST_LOADED:-0}" 'shell integration does not load comman
 RC_MODE=bash
 mkdir -p -- "$WORK_DIR/user"
 printf '%s\n' 'export USER_SETTING=keep' >"$WORK_DIR/user/.bashrc"
+chmod 0640 "$WORK_DIR/user/.bashrc"
 apply_rc >"$WORK_DIR/bash.stdout" 2>"$WORK_DIR/bash.stderr"
 apply_rc >"$WORK_DIR/bash-second.stdout" 2>"$WORK_DIR/bash-second.stderr"
 assert_eq 1 "$(grep -Fc '# >>> clashctl >>>' "$WORK_DIR/user/.bashrc")" \
@@ -62,6 +81,7 @@ assert_eq 0 "${CLASHCTL_TEST_LOADED:-0}" 'writing shell integration does not loa
 grep -Fqs 'export USER_SETTING=keep' "$WORK_DIR/user/.bashrc" ||
     fail 'bash integration removed an unrelated setting'
 bash -n "$WORK_DIR/user/.bashrc"
+assert_eq 640 "$(stat -c %a "$WORK_DIR/user/.bashrc")" 'bash integration preserves permissions'
 
 cat >"$WORK_DIR/user/.bashrc" <<'EOF'
 export USER_SETTING=keep

@@ -1554,11 +1554,23 @@ PATH="$no_git_bin" CLASHCTL_HOME="$archive_home" CLASHCTL_UPDATE_BRANCH=legacy G
 [ "$(tail -n 1 "$archive_home/.clashctl-install")" = archive ] || fail 'archive type was not recorded'
 [ -s "$archive_home/.clashctl-files" ] || fail 'archive file manifest missing'
 grep -Fq 'https://proxy.example/https://github.com/nelvko/clashctl/archive/refs/heads/master.tar.gz' "$DOWNLOAD_LOG" || fail 'source archive ignored proxy or branch'
-# wget 只负责拉取源码，此处初始化桩不依赖 curl。
+# 安装本就依赖 curl；只有 wget 时应及早报错，不留下半安装目录。
 mv "$no_git_bin/curl" "$WORK_DIR/saved-curl"
-PATH="$no_git_bin" CLASHCTL_HOME="$WORK_DIR/wget-home" GH_PROXY='' \
-    bash -c 'cat "$1" | bash -s --' _ "$REPO_DIR/install.sh" >"$WORK_DIR/wget-install.out" 2>&1 || { cat "$WORK_DIR/wget-install.out"; fail 'wget fallback pipe install failed'; }
-grep -q '^wget ' "$DOWNLOAD_LOG" || fail 'wget fallback was not used'
+before_downloads=$(wc -l <"$DOWNLOAD_LOG")
+if PATH="$no_git_bin" CLASHCTL_HOME="$WORK_DIR/wget-home" GH_PROXY='' \
+    bash -c 'cat "$1" | bash -s --' _ "$REPO_DIR/install.sh" >"$WORK_DIR/wget-install.out" 2>&1; then
+    fail 'installation without curl succeeded'
+fi
+grep -Fq '缺少依赖: curl' "$WORK_DIR/wget-install.out" || fail 'missing curl was not diagnosed'
+[ ! -e "$WORK_DIR/wget-home" ] || fail 'missing curl left a partial installation'
+[ "$(wc -l <"$DOWNLOAD_LOG")" = "$before_downloads" ] || fail 'missing curl invoked wget'
+PATH="$no_git_bin" bash "$REPO_DIR/install.sh" --help >/dev/null || fail 'help required curl'
+if PATH="$no_git_bin" bash -c '. "$1/scripts/install-common.sh"; _source_archive "$2" master ""' _ \
+    "$REPO_DIR" "$WORK_DIR/no-curl-source" >"$WORK_DIR/no-curl-source.out" 2>&1; then
+    fail 'shared source downloader accepted missing curl'
+fi
+grep -Fq '缺少依赖: curl' "$WORK_DIR/no-curl-source.out" || fail 'shared downloader did not diagnose missing curl'
+[ "$(wc -l <"$DOWNLOAD_LOG")" = "$before_downloads" ] || fail 'shared downloader invoked wget'
 mv "$WORK_DIR/saved-curl" "$no_git_bin/curl"
 # Git 存在但失败时不能偷偷回退下载。
 before_downloads=$(wc -l <"$DOWNLOAD_LOG")

@@ -408,41 +408,24 @@ _set_env() {
     local key=$1
     local value=$2
     local env_path="${CLASHCTL_ENV_PATH:-${CLASHCTL_HOME}/.env}"
-    local quoted tmp line found=0
+    local quoted tmp line content='' found=0
 
     [[ $key =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
     printf -v quoted '%q' "$value"
-    tmp=$(mktemp "${env_path}.tmp.XXXXXX") || return 1
-    chmod 0600 "$tmp" || {
-        command rm -f -- "$tmp"
-        return 1
-    }
     if [ -f "$env_path" ]; then
         while IFS= read -r line || [ -n "$line" ]; do
             case $line in
-            "$key="*)
-                printf '%s=%s\n' "$key" "$quoted" >>"$tmp" || {
-                    command rm -f -- "$tmp"
-                    return 1
-                }
-                found=1
-                ;;
-            *)
-                printf '%s\n' "$line" >>"$tmp" || {
-                    command rm -f -- "$tmp"
-                    return 1
-                }
-                ;;
+            "$key="*) content+="$key=$quoted"$'\n'; found=1 ;;
+            *) content+="$line"$'\n' ;;
             esac
-        done <"$env_path"
+        done <"$env_path" || return 1
     fi
-    if [ "$found" -eq 0 ]; then
-        printf '%s=%s\n' "$key" "$quoted" >>"$tmp" || {
-            command rm -f -- "$tmp"
-            return 1
-        }
+    [ "$found" -eq 1 ] || content+="$key=$quoted"$'\n'
+    tmp=$(mktemp "${env_path}.tmp.XXXXXX") || return 1
+    if ! { chmod 0600 "$tmp" && printf '%s' "$content" >"$tmp" && /bin/mv -f -- "$tmp" "$env_path"; }; then
+        command rm -f -- "$tmp"
+        return 1
     fi
-    /bin/mv -f -- "$tmp" "$env_path"
 }
 
 detect_rc() {
@@ -489,33 +472,23 @@ _append_source_block() {
     ' "$rc" >/dev/null || return 2
     tmp=$(mktemp "${rc}.clashctl.XXXXXX") || return 1
     mode=$(stat -c %a -- "$rc" 2>/dev/null) || mode=0600
-    awk '
-        /^# >>> clashctl >>>$/ { managed=1; next }
-        /^# <<< clashctl <<<$/{ managed=0; next }
-        managed { next }
-        { print }
-    ' "$rc" >"$tmp" || {
-        command rm -f -- "$tmp"
-        return 1
-    }
-    if [ -s "$tmp" ] && [ "$(tail -c 1 -- "$tmp" | wc -l)" -eq 0 ]; then
-        printf '\n' >>"$tmp" || {
-            command rm -f -- "$tmp"
-            return 1
-        }
-    fi
     printf -v quoted '%q' "$CLASHCTL_HOME"
-    {
-        printf '%s\n' '# >>> clashctl >>>'
-        printf 'export CLASHCTL_HOME=%s\n' "$quoted"
-        # shellcheck disable=SC2016 # 变量应在新 shell 加载 rc 时展开
-        printf '%s\n' '[ -s "$CLASHCTL_HOME/scripts/cmd/clashctl.sh" ] && . "$CLASHCTL_HOME/scripts/cmd/clashctl.sh"'
-        printf '%s\n' '# <<< clashctl <<<'
-    } >>"$tmp" || {
+    # awk 的 print 已补齐末尾换行；所有写入成功后才替换原文件。
+    # shellcheck disable=SC2016 # 变量应在新 shell 加载 rc 时展开
+    if ! {
+        awk '
+            /^# >>> clashctl >>>$/ { managed=1; next }
+            /^# <<< clashctl <<<$/{ managed=0; next }
+            managed { next }
+            { print }
+        ' "$rc" &&
+            printf '%s\n' '# >>> clashctl >>>' "export CLASHCTL_HOME=$quoted" \
+                '[ -s "$CLASHCTL_HOME/scripts/cmd/clashctl.sh" ] && . "$CLASHCTL_HOME/scripts/cmd/clashctl.sh"' \
+                '# <<< clashctl <<<'
+    } >"$tmp" || ! chmod "$mode" "$tmp" || ! /bin/mv -f -- "$tmp" "$rc"; then
         command rm -f -- "$tmp"
         return 1
-    }
-    chmod "$mode" "$tmp" && /bin/mv -f -- "$tmp" "$rc"
+    fi
 }
 
 # 只删除指向当前安装的完整托管块或相邻的旧版 export/source 两行。

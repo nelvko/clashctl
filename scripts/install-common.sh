@@ -140,14 +140,8 @@ _source_archive() (
     trap 'rm -f -- "$archive" "$entries"' EXIT
     url="https://github.com/nelvko/clashctl/archive/refs/heads/${branch}.tar.gz"
     [ -z "$proxy" ] || url="${proxy%/}/$url"
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --connect-timeout 10 --max-time 180 --retry 2 -o "$archive" "$url" || return 1
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q --timeout=30 --tries=3 -O "$archive" "$url" || return 1
-    else
-        printf '下载源码需要 curl 或 wget\n' >&2
-        return 1
-    fi
+    command -v curl >/dev/null 2>&1 || { printf '缺少依赖: curl，请先安装后重试\n' >&2; return 1; }
+    curl -fsSL --connect-timeout 10 --max-time 180 --retry 2 -o "$archive" "$url" || return 1
     # 仅允许单个顶层目录内的普通文件/目录；拒绝越界路径和链接后再解压。
     tar -tzf "$archive" >"$entries" || return 1
     awk '
