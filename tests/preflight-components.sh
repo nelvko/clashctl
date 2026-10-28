@@ -632,6 +632,55 @@ ZIP_KERNEL='' ZIP_YQ='' ZIP_SUBCONVERTER='' ZIP_UI='' unzip_zip \
 assert_eq 1 "$rc" 'empty component set is rejected'
 assert_contains "$stderr_file" '没有待安装的组件归档' 'empty set diagnostic is actionable'
 
+# Clash 仅保留已有安装；重装不下载、不替换内核，也不修复不可信文件。
+(
+    export CLASHCTL_KERNEL=clash
+    configure_home clash-existing
+    # 恢复真实下载入口，避免前面的组件下载桩掩盖支持范围检查。
+    # shellcheck source=../scripts/preflight.sh
+    . "$REPO_DIR/scripts/preflight.sh"
+    ZIP_BASE_DIR="$CLASHCTL_HOME/archives"
+    clash_network="$WORK_DIR/clash-network"
+    curl() { printf 'request\n' >>"$clash_network"; return 1; }
+    printf '#!/bin/sh\nexit 0\n' >"$WORK_DIR/clash-original"
+    cp -- "$WORK_DIR/clash-original" "$BIN_KERNEL"
+    chmod 0755 -- "$BIN_KERNEL"
+    for attempt in 1 2; do
+        prepare_zip kernel >"$WORK_DIR/clash.out" 2>&1 ||
+            fail "existing Clash reuse failed on attempt $attempt: $(<"$WORK_DIR/clash.out")"
+        cmp -s -- "$WORK_DIR/clash-original" "$BIN_KERNEL" || fail 'Clash reuse changed kernel bytes'
+        assert_mode 755 "$BIN_KERNEL" 'Clash reuse preserves kernel permissions'
+    done
+    for state in missing symlink nonexecutable writable; do
+        rm -f -- "$BIN_KERNEL"
+        cp -- "$WORK_DIR/clash-original" "$BIN_KERNEL"
+        chmod 0755 -- "$BIN_KERNEL"
+        case $state in
+        missing) rm -- "$BIN_KERNEL" ;;
+        symlink) rm -- "$BIN_KERNEL"; ln -s "$WORK_DIR/clash-original" "$BIN_KERNEL" ;;
+        nonexecutable) chmod 0644 -- "$BIN_KERNEL" ;;
+        writable) chmod 0777 -- "$BIN_KERNEL" ;;
+        esac
+        if prepare_zip kernel >"$WORK_DIR/clash.out" 2>&1; then
+            fail "Clash accepted $state kernel"
+        fi
+        case $state in
+        missing) assert_absent "$BIN_KERNEL" 'missing Clash was not installed' ;;
+        symlink) [ -L "$BIN_KERNEL" ] || fail 'Clash rejection replaced a symlink' ;;
+        nonexecutable) assert_mode 644 "$BIN_KERNEL" 'Clash rejection preserves nonexecutable mode' ;;
+        writable) assert_mode 777 "$BIN_KERNEL" 'Clash rejection preserves writable mode' ;;
+        esac
+        [ "$state" = missing ] || cmp -s -- "$WORK_DIR/clash-original" "$BIN_KERNEL" ||
+            fail "Clash rejection changed $state kernel bytes"
+    done
+    if download_zip clash >"$WORK_DIR/clash.out" 2>&1; then
+        fail 'direct Clash download remained available'
+    fi
+    assert_contains "$WORK_DIR/clash.out" '不再提供 Clash 内核下载' 'Clash download refusal is explicit'
+    assert_absent "$clash_network" 'Clash preservation and refusal must not use the network'
+    assert_absent "$ZIP_BASE_DIR" 'Clash refusal must not create an archive cache'
+)
+
 if [ "$(id -u)" -eq 0 ]; then
     printf 'preflight-components: ok (root numeric-owner coverage)\n'
 else

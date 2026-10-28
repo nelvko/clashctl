@@ -1057,7 +1057,7 @@ _install_main() {
 安装选项:
   --local                 使用本地源码安装，依赖仍按需下载
   --home <路径>           指定安装目录（绝对路径，默认 ~/.clashctl）
-  --kernel <内核>         mihomo（默认）或 clash；已有安装不可切换
+  --kernel <内核>         mihomo（默认）；clash 仅用于已有安装，重装不可切换
   --sub <URL>             添加并启用订阅；无现有配置时交互询问
   --service <方式>        auto（默认）、systemd-user 或 nohup
                           auto 沿用已有方式；新装普通用户优先用户级 systemd
@@ -1279,6 +1279,10 @@ HELP
     fi
     if [ -n "$legacy_home" ] && [ -n "$kernel" ] && [ "$kernel" != "$legacy_kernel" ]; then
         printf '已有安装不支持切换内核，请使用 --kernel %s 重试\n' "$legacy_kernel" >&2
+        exit 1
+    fi
+    if [ -z "$existing_kind" ] && [ "$kernel" = clash ]; then
+        printf '新安装仅支持 mihomo；已有 Clash 安装仍可更新和重装\n' >&2
         exit 1
     fi
     if [ -z "$existing_kind" ] || [ -n "$legacy_home" ]; then

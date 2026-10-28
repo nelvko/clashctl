@@ -52,6 +52,17 @@ prepare_zip() {
     }
     for item in "$@"; do
         [ "$item" != kernel ] || item=$CLASHCTL_KERNEL
+        if [ "$item" = clash ]; then
+            if _managed_directory_is_safe "$BIN_BASE_DIR" &&
+                _managed_directory_is_safe "${BIN_KERNEL%/*}" &&
+                _component_file_is_safe "$BIN_KERNEL" 755; then
+                _ui_ok '使用已安装的 Clash'
+                continue
+            fi
+            _ui_error '不再提供 Clash 内核下载'
+            _ui_detail '处理' "请恢复原 Clash 内核文件后重试：$BIN_KERNEL"
+            return 1
+        fi
         [ "$item" != mihomo ] || _mihomo_install_path_available || return 1
         if [ "$item" = mihomo ] && _managed_directory_is_safe "$BIN_BASE_DIR" &&
             _managed_directory_is_safe "${BIN_KERNEL%/*}" &&
@@ -514,22 +525,26 @@ _download_archive() {
 download_zip() {
     _INSTALL_DOWNLOAD_FAILED_URL='' _INSTALL_DOWNLOAD_FAILED_TARGET=''
     (($#)) || return 0
+    local item
+    for item in "$@"; do
+        [ "$item" != clash ] || { _ui_error '不再提供 Clash 内核下载'; return 1; }
+    done
     _managed_directory_prepare "$ZIP_BASE_DIR" 0755 || {
         _ui_error "依赖缓存目录无法安全使用"
         _ui_detail "目录" "$ZIP_BASE_DIR"
         _ui_detail "要求" "必须是当前用户所有的真实目录，且组用户和其他用户不可写"
         return 1
     }
-    local arch mihomo_arch clash_arch yq_arch sub_arch level=v1 mihomo_archive='' archive_rc=0
+    local arch mihomo_arch yq_arch sub_arch level=v1 mihomo_archive='' archive_rc=0
     arch=$(uname -m) || {
         _ui_error "无法检测系统架构"
         return 1
     }
     case "$arch" in
-    x86_64) mihomo_arch=amd64 clash_arch=amd64 yq_arch=amd64 sub_arch=linux64; level=$(_mihomo_cpu_level) ;;
-    *86*) mihomo_arch=386 clash_arch=386 yq_arch=386 sub_arch=linux32 ;;
-    armv*) mihomo_arch=armv7 clash_arch=armv5 yq_arch=arm sub_arch=armv7 ;;
-    aarch64) mihomo_arch=arm64 clash_arch=arm64 yq_arch=arm64 sub_arch=aarch64 ;;
+    x86_64) mihomo_arch=amd64 yq_arch=amd64 sub_arch=linux64; level=$(_mihomo_cpu_level) ;;
+    *86*) mihomo_arch=386 yq_arch=386 sub_arch=linux32 ;;
+    armv*) mihomo_arch=armv7 yq_arch=arm sub_arch=armv7 ;;
+    aarch64) mihomo_arch=arm64 yq_arch=arm64 sub_arch=aarch64 ;;
     *)
         _ui_error "不支持的系统架构：$arch"
         _ui_detail "缓存目录" "$ZIP_BASE_DIR"
@@ -538,10 +553,8 @@ download_zip() {
     esac
 
     CLASHCTL_LATEST_VERSION_FALLBACK_WARNED=0
-    local item
     for item in "$@"; do
         case $item in
-        clash) ;;
         mihomo)
             archive_rc=0
             mihomo_archive=$(_find_mihomo_archive "$mihomo_arch" "$level") || archive_rc=$?
@@ -572,11 +585,6 @@ download_zip() {
 
     for item in "$@"; do
         case $item in
-        clash)
-            url="https://github.com/nelvko/clashctl/releases/download/clash/clash-linux-${clash_arch}-2023.08.17.gz"
-            target="${ZIP_BASE_DIR}/${url##*/}"
-            label='clash 2023.08.17'
-            ;;
         mihomo)
             url="https://github.com/MetaCubeX/mihomo/releases/download/${VERSION_MIHOMO##*-}/mihomo-linux-${mihomo_variant}-${VERSION_MIHOMO##*-}.gz"
             ZIP_KERNEL_LOCAL=0
@@ -609,7 +617,7 @@ download_zip() {
             ;;
         esac
 
-        if [ "$item" != clash ] && typeset -f _install_ui_output >/dev/null 2>&1 &&
+        if typeset -f _install_ui_output >/dev/null 2>&1 &&
             [ "${_INSTALL_VERBOSE:-}" != 1 ]; then
             version_source_var="VERSION_${item^^}_SOURCE"
             case ${!version_source_var:-} in
@@ -619,7 +627,7 @@ download_zip() {
         fi
         _download_archive "$label" "$url" "$target" || return 1
         case $item in
-        clash | mihomo) ZIP_KERNEL=$target ;;
+        mihomo) ZIP_KERNEL=$target ;;
         yq) ZIP_YQ=$target ;;
         subconverter) ZIP_SUBCONVERTER=$target ;;
         ui) ZIP_UI=$target ;;

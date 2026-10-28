@@ -432,21 +432,38 @@ grep -q '^CLASHCTL_UPDATE_BRANCH=iu$' "$branch_failed_home/.env" || fail 'retry 
 for form in separate equals; do
     option_home="$WORK_DIR/options-$form"
     if [ "$form" = separate ]; then
-        option_args=(--kernel clash --sub 'file:///install-sub?token=example&name=main')
+        option_args=(--kernel mihomo --sub 'file:///install-sub?token=example&name=main')
     else
-        option_args=(--kernel=clash '--sub=file:///install-sub?token=example&name=main')
+        option_args=(--kernel=mihomo '--sub=file:///install-sub?token=example&name=main')
     fi
     TEST_SERVICE_MANAGER=systemd CLASHCTL_HOME="$option_home" bash "$REPO_DIR/install.sh" "${option_args[@]}" \
         >"$WORK_DIR/options-$form.out" 2>&1 ||
         { cat "$WORK_DIR/options-$form.out"; fail "install options rejected: $form"; }
     [ "$(cat "$option_home/data/subscription")" = 'file:///install-sub?token=example&name=main' ] ||
         fail "install subscription was not passed through: $form"
-    [ "$(cat "$option_home/data/download-options")" = 'clash|master|' ] ||
+    [ "$(cat "$option_home/data/download-options")" = 'mihomo|master|' ] ||
         fail "install kernel option was not applied: $form"
     [ -f "$option_home/data/started" ] || fail "install subscription was not activated: $form"
     [ -f "$option_home/data/enabled" ] || fail "install subscription did not enable service: $form"
     grep -Fq '已注册 systemd 服务' "$WORK_DIR/options-$form.out" || fail 'managed service registration result missing'
     grep -Fq '已设置开机自启' "$WORK_DIR/options-$form.out" || fail 'managed service startup result missing'
+done
+# 全新 Clash 安装在目录物化前拒绝；管道入口允许先取得目标版本源码。
+for entry in local pipe; do
+    rejected_home="$WORK_DIR/new-clash-$entry"
+    if [ "$entry" = local ]; then
+        clash_install=(bash "$REPO_DIR/install.sh" --local --kernel clash)
+    else
+        clash_install=(bash -c 'cat "$1" | bash -s -- --kernel=clash' _ "$REPO_DIR/install.sh")
+    fi
+    if CLASHCTL_HOME="$rejected_home" "${clash_install[@]}" >"$WORK_DIR/new-clash-$entry.out" 2>&1; then
+        fail "new Clash installation succeeded: $entry"
+    fi
+    grep -Fq '新安装仅支持 mihomo' "$WORK_DIR/new-clash-$entry.out" ||
+        { cat "$WORK_DIR/new-clash-$entry.out"; fail "new Clash installation lacked a diagnosis: $entry"; }
+    [ ! -e "$rejected_home" ] && [ ! -L "$rejected_home" ] || fail "rejected Clash installation created its directory: $entry"
+    [ -z "$(find "$WORK_DIR" -maxdepth 1 -name "new-clash-$entry.download.*" -print -quit)" ] ||
+        fail "rejected Clash installation retained staged source: $entry"
 done
 # 详细模式必须从安装入口传递到组件下载阶段。
 verbose_home="$WORK_DIR/verbose-install"
@@ -576,7 +593,12 @@ grep -Eq '^GH_PROXY=https://gh-proxy\.org/?$' "$WORK_DIR/readme-home/.env" || fa
 grep -q '^CLASHCTL_UPDATE_BRANCH=master$' "$WORK_DIR/readme-home/.env" || fail 'README master branch was not persisted'
 # 续装保留已保存的选项；显式参数优先，空代理可切回直连。
 retry_home="$WORK_DIR/retry-options"
-CLASHCTL_HOME="$retry_home" CLASHCTL_UPDATE_BRANCH=iu bash "$REPO_DIR/install.sh" --kernel clash --gh-proxy=https://old.proxy.test >"$WORK_DIR/options.out" 2>&1
+CLASHCTL_HOME="$retry_home" CLASHCTL_UPDATE_BRANCH=iu bash "$REPO_DIR/install.sh" --gh-proxy=https://old.proxy.test >"$WORK_DIR/options.out" 2>&1
+# 用已有安装构造历史 Clash 状态，避免借助已停止支持的新装入口。
+sed -i 's/^CLASHCTL_KERNEL=.*/CLASHCTL_KERNEL=clash/' "$retry_home/.env"
+mv "$retry_home/bin/mihomo" "$retry_home/bin/clash"
+chmod 0755 "$retry_home/bin/clash"
+printf '%s\n' 'clash|iu|https://old.proxy.test' >"$retry_home/data/download-options"
 env -u GH_PROXY -u CLASHCTL_UPDATE_BRANCH CLASHCTL_HOME="$retry_home" bash "$retry_home/install.sh" >"$WORK_DIR/options.out" 2>&1
 [ "$(cat "$retry_home/data/download-options")" = 'clash|iu|https://old.proxy.test' ] || fail 'retry lost saved options'
 # 已有安装禁止切换内核，检查必须早于更新、配置写入和服务操作。
@@ -1350,12 +1372,12 @@ with open(home + "/data/subscription") as saved:
 
 # 显式订阅和内核参数从管道入口传入，有控制终端时也不能再提示输入。
 home, output, _ = install_in_terminal("tty-option-install",
-                                     ["--kernel", "clash", "--sub", "file:///from-flag"])
+                                     ["--kernel", "mihomo", "--sub", "file:///from-flag"])
 assert prompt not in output, "flag installation prompted for a subscription"
 with open(home + "/data/subscription") as saved:
     assert saved.read() == "file:///from-flag"
 with open(home + "/data/download-options") as saved:
-    assert saved.read().startswith("clash|master|")
+    assert saved.read().startswith("mihomo|master|")
 PTY
 
 . "$REPO_DIR/scripts/cmd/update.sh"

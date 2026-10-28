@@ -817,6 +817,36 @@ for state in running stopped; do
     else
         assert_absent "$home/data/clash.pid" 'stopped Clash was started'
     fi
+    snapshot_data "$home" >"$WORK_DIR/clash-data.before"
+    CLASHCTL_HOME="$home" bash -c '. "$CLASHCTL_HOME/scripts/cmd/clashctl.sh" && clashctl update' \
+        >"$WORK_DIR/clash-update.out" 2>&1 || { cat "$WORK_DIR/clash-update.out"; fail 'existing Clash script update failed'; }
+    run_upgrade archive "$home" >"$WORK_DIR/clash-repeat.out" 2>&1 || { cat "$WORK_DIR/clash-repeat.out"; fail 'existing Clash reinstall failed'; }
+    assert_eq "$binary_hash" "$(sha256sum "$home/bin/clash" | cut -d ' ' -f1)" 'repeated Clash kernel bytes'
+    snapshot_data "$home" >"$WORK_DIR/clash-data.after"
+    cmp "$WORK_DIR/clash-data.before" "$WORK_DIR/clash-data.after" || fail 'Clash update or reinstall changed user data'
+    if [ "$state" = running ]; then
+        _service_process_record_pid "$home/data/clash.pid" >/dev/null || fail 'repeated Clash install lost running service'
+    else
+        assert_absent "$home/data/clash.pid" 'repeated Clash install started a stopped service'
+        mv "$home/bin/clash" "$WORK_DIR/saved-clash"
+        if run_upgrade archive "$home" >"$WORK_DIR/clash-missing.out" 2>&1; then fail 'missing Clash kernel was silently replaced'; fi
+        assert_contains "$WORK_DIR/clash-missing.out" '请恢复原 Clash 内核文件后重试' 'missing Clash repair diagnostic'
+        assert_absent "$home/bin/mihomo" 'missing Clash repair switched kernels'
+        assert_absent "$home/bin/clash" 'missing Clash repair downloaded a kernel'
+        assert_absent "$home/.clashctl-incomplete" 'missing Clash repair changed completion state'
+        CLASHCTL_HOME="$home" bash -c '. "$CLASHCTL_HOME/scripts/cmd/clashctl.sh" && clashctl update' \
+            >"$WORK_DIR/clash-update.out" 2>&1 || { cat "$WORK_DIR/clash-update.out"; fail 'missing Clash blocked script updates'; }
+        snapshot_data "$home" >"$WORK_DIR/clash-data.after"
+        cmp "$WORK_DIR/clash-data.before" "$WORK_DIR/clash-data.after" || fail 'missing Clash repair changed user data'
+        mv "$WORK_DIR/saved-clash" "$home/bin/clash"
+        # 安装中断后从已安装的脚本离线重试：无 format 标记也只复用现有文件。
+        rm "$home/.clashctl-format"
+        : >"$home/.clashctl-incomplete"
+        CLASHCTL_HOME="$home" NESTED_FAIL_FETCH=1 bash "$home/install.sh" --home "$home" \
+            >"$WORK_DIR/clash-resume.out" 2>&1 || { cat "$WORK_DIR/clash-resume.out"; fail 'offline Clash resume failed'; }
+        assert_eq "$binary_hash" "$(sha256sum "$home/bin/clash" | cut -d ' ' -f1)" 'offline Clash resume kernel bytes'
+        assert_absent "$home/.clashctl-incomplete" 'offline Clash resume did not finish'
+    fi
 done
 
 # 真实已发布的旧 updater：源码落位后、业务加载前完成迁移。
