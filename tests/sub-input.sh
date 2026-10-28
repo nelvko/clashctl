@@ -10,8 +10,12 @@ printf '1\n' >"$WORK_DIR/home/.clashctl-format"
 printf 'CLASHCTL_KERNEL=mihomo\nINIT_TYPE=nohup\n' >"$WORK_DIR/home/.env"
 cat >"$WORK_DIR/home/scripts/cmd/zz-fixture.sh" <<'EOF'
 _sub_url_exists() { return 1; }
+_sub_has() { [ "$1" = existing ]; }
+_sub_current() { printf existing; }
+_sub_get() { printf 'https://example.invalid/sub?token=a&b=2%%20x'; }
 _sub_download() {
     printf '%s' "$1" >"$CLASHCTL_HOME/received"
+    printf '%s\n' "$2" "${CLASHCTL_SUB_TIMEOUT:-}" "${CLASHCTL_SUB_UA:-}" >"$CLASHCTL_HOME/options"
     _SUB_DL_FILE=/dev/null
     FETCH_USERINFO='' FETCH_FILENAME=''
 }
@@ -36,11 +40,11 @@ env = {"PATH": os.environ["PATH"], "HOME": str(work / "user"),
 prompt = "请输入要添加的订阅链接：".encode()
 commands = {
     "bash": ["bash", "--noprofile", "--norc", "-c",
-             '. "$CLASHCTL_HOME/scripts/cmd/clashctl.sh" && clashctl sub add "$@"', "sub-input"],
+             '. "$CLASHCTL_HOME/scripts/cmd/clashctl.sh" && clashctl sub "$@"', "sub-input"],
     "zsh": ["zsh", "-f", "-c",
-            '. "$CLASHCTL_HOME/scripts/cmd/clashctl.sh" && clashctl sub add "$@"', "sub-input"],
+            '. "$CLASHCTL_HOME/scripts/cmd/clashctl.sh" && clashctl sub "$@"', "sub-input"],
     "fish": ["fish", "--no-config", "-c",
-             'source "$CLASHCTL_HOME/scripts/cmd/clashctl.fish"; clashctl sub add $argv', "--"],
+             'source "$CLASHCTL_HOME/scripts/cmd/clashctl.fish"; clashctl sub $argv', "--"],
 }
 
 def terminal(command, data):
@@ -85,11 +89,11 @@ def terminal(command, data):
         os.close(fd)
 
 failures, checks = [], 0
-def check(shell, name, data=b"", expected=None, tty=True, args=()):
+def check(shell, name, data=b"", expected=None, tty=True, args=(), subcommand="add", options=None, error=None):
     global checks
-    for file in (home / "received", home / "saved"):
+    for file in (home / "received", home / "saved", home / "options"):
         file.unlink(missing_ok=True)
-    command = commands[shell] + list(args)
+    command = commands[shell] + [subcommand] + list(args)
     try:
         if tty:
             rc, output = terminal(command, data)
@@ -104,7 +108,11 @@ def check(shell, name, data=b"", expected=None, tty=True, args=()):
             assert (home / "received").read_bytes() == expected, (home / "received").read_bytes()
             assert (home / "saved").read_bytes() == expected, (home / "saved").read_bytes()
         if args:
-            assert prompt not in output, "explicit URL prompted for input"
+            assert prompt not in output, "explicit argument prompted for input"
+        if options is not None:
+            assert (home / "options").read_text().splitlines() == list(options), (home / "options").read_text()
+        if error is not None:
+            assert error.encode() in output, output
         checks += 1
         print(f"PASS: {shell} {name}")
     except (AssertionError, subprocess.TimeoutExpired) as exc:
@@ -126,6 +134,26 @@ for shell in commands:
     check(shell, "pipe literal URL", unicode_url + b"\n", unicode_url, tty=False)
     check(shell, "pipe final line without newline", url, url, tty=False)
     check(shell, "explicit URL", expected=url, tty=False, args=(url.decode(),))
+
+# 同一组选项必须在两个命令及各 Shell 中保持一致；失败不能开始下载。
+for shell in commands:
+    for subcommand, target in (("add", url.decode()), ("update", "existing")):
+        for flags, values in (
+            (("--raw", "--raw", "-t", "7", "--ua", "Agent / 中文"), ("raw", "7", "Agent / 中文")),
+            (("--convert", "--timeout=9", "--ua=Other Agent"), ("convert", "9", "Other Agent")),
+        ):
+            check(shell, f"{subcommand} download options", expected=url, tty=False,
+                  args=flags + (target,), subcommand=subcommand, options=values)
+        for flags, error in (
+            (("--raw", "--convert"), "互斥"),
+            (("--convert", "--raw"), "互斥"),
+            (("--ua",), "UA 参数"),
+            (("--ua=",), "UA 参数"),
+            (("--timeout",), "超时参数"),
+            ((("--all",) if subcommand == "add" else ("--name",)), "未知选项"),
+        ):
+            check(shell, f"{subcommand} rejected {flags}", tty=False,
+                  args=flags, subcommand=subcommand, error=error)
 
 assert not failures, "\n".join(failures)
 print(f"PASS: subscription input ({checks} checks)")

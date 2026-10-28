@@ -29,25 +29,17 @@ clashnode() {
         return 1
     }
 
-    case "${1:-}" in
-    ls | list)
-        shift
-        _node_list "$@"
-        ;;
-    delay)
-        shift
-        _node_delay "$@"
-        ;;
-    use)
-        shift
-        _node_use "$@"
-        ;;
-    -* | '')
-        # 省略子命令或直接带选项 → 交互式切换；选项由 _node_use 自行解析
-        _node_use "$@"
-        ;;
+    local cmd=${1:-}
+    case $cmd in
+    -* | '') cmd=use ;; # 省略子命令或直接带选项 → 交互式切换；选项由 _node_use 自行解析
+    *) shift ;;
+    esac
+    case $cmd in
+    ls | list) _node_list "$@" ;;
+    delay) _node_delay "$@" ;;
+    use) _node_use "$@" ;;
     *)
-        _errorcat "未知 node 子命令：$1"
+        _errorcat "未知 node 子命令：$cmd"
         node_help
         return 1
         ;;
@@ -74,22 +66,6 @@ _node_curl() {
     [ -n "$secret" ] && auth=(-H "Authorization: Bearer $secret")
     curl -s --noproxy '*' --max-time "${CLASHCTL_API_TIMEOUT:-10}" \
         -X "$method" "${auth[@]}" "${base}${path}" "$@"
-}
-
-# 路径段 URL 编码（组/节点名常含空格、中文、emoji）；LC_ALL=C 按字节百分号编码
-_node_urlencode() {
-    local LC_ALL=C s=$1 out='' c i
-    for ((i = 0; i < ${#s}; i++)); do
-        c=${s:i:1}
-        case $c in
-        [a-zA-Z0-9._~-]) out+=$c ;;
-        *)
-            printf -v c '%%%02X' "'$c"
-            out+=$c
-            ;;
-        esac
-    done
-    printf '%s' "$out"
 }
 
 _node_require_arg() {
@@ -126,11 +102,81 @@ _node_validate_delay_timeout() {
     }
 }
 
+# use 与 delay 共用的选项；结果写入调用方的 url、timeout、args、help、with_delay 或 mode。
+_node_parse_opts() {
+    local cmd=$1
+    shift
+    url=$(_node_default_delay_url)
+    timeout=$(_node_default_delay_timeout)
+    args=()
+
+    while [ $# -gt 0 ]; do
+        case "$cmd:$1" in
+        use:-g | use:--group | use:-p | use:--proxy | delay:-d | delay:--delay)
+            _errorcat "未知选项：$1"
+            return 1
+            ;;
+        esac
+        case "$1" in
+        -h | --help)
+            help=true
+            return 0
+            ;;
+        -d | --delay)
+            with_delay=true
+            ;;
+        -g | --group)
+            [ "$mode" = proxy ] && {
+                _errorcat "-g/--group 与 -p/--proxy 不能同时使用"
+                return 1
+            }
+            mode=group
+            ;;
+        -p | --proxy)
+            [ "$mode" = group ] && {
+                _errorcat "-g/--group 与 -p/--proxy 不能同时使用"
+                return 1
+            }
+            mode=proxy
+            ;;
+        -u | --url)
+            _node_require_arg "$1" "${2-}" || return 1
+            url=$2
+            shift
+            ;;
+        --url=*)
+            url="${1#*=}"
+            ;;
+        -t | --timeout)
+            _node_require_arg "$1" "${2-}" || return 1
+            timeout=$2
+            shift
+            ;;
+        --timeout=*)
+            timeout="${1#*=}"
+            ;;
+        --)
+            shift
+            args+=("$@")
+            break
+            ;;
+        -*)
+            _errorcat "未知选项：$1"
+            return 1
+            ;;
+        *)
+            args+=("$1")
+            ;;
+        esac
+        shift
+    done
+}
+
 ########################################
 #            数据读取
 ########################################
 
-# 列出所有"策略组"（含 .all 成员列表的项）：name <TAB> type <TAB> now
+# 策略组：name <TAB> type <TAB> now
 _node_groups() {
     _node_curl GET /proxies | "$BIN_YQ" -p json '
         .proxies | to_entries | .[]
@@ -165,35 +211,57 @@ _node_classify() {
     fi
 }
 
+# 一次读取组详情，写入调用方的 now、members；区分不存在的名称和空组。
+_node_group() {
+    local json name
+    now='' members=()
+    json=$(_node_curl GET "/proxies/$(_urlencode "$1")")
+    while IFS= read -r name; do
+        [ -n "$name" ] && members+=("$name")
+    done < <("$BIN_YQ" -p json '.all // [] | .[]' <<<"$json" 2>/dev/null)
+    now=$("$BIN_YQ" -p json '.now // ""' <<<"$json" 2>/dev/null)
+    # 没有成员时再区分空组和非策略组
+    [ ${#members[@]} -gt 0 ] || "$BIN_YQ" -p json -e '.all' <<<"$json" >/dev/null 2>&1
+}
+
 # 某组的成员节点列表（每行一个）
 _node_members() {
-    local enc
-    enc=$(_node_urlencode "$1")
-    _node_curl GET "/proxies/$enc" | "$BIN_YQ" -p json '.all // [] | .[]' 2>/dev/null
+    _node_curl GET "/proxies/$(_urlencode "$1")" | "$BIN_YQ" -p json '.all // [] | .[]' 2>/dev/null
 }
 
-# 一次拉取某组详情 JSON（供需同时读取 now 与 members 的场景本地复用，省一次 HTTP）
-_node_group_json() {
-    local enc
-    enc=$(_node_urlencode "$1")
-    _node_curl GET "/proxies/$enc"
+# 读取到调用方 names、types、nows，并计算显示列宽；selector 仅保留可手动切换的组。
+_node_load_groups() {
+    local filter=${1:-all} name type now i shown=()
+    names=() types=() nows=()
+    while IFS=$'\t' read -r name type now; do
+        [ "$filter" = selector ] && [ "$type" != Selector ] && continue
+        names+=("$name")
+        types+=("$type")
+        nows+=("$now")
+    done < <(_node_groups)
+    for i in "${!nows[@]}"; do
+        shown+=("${nows[$i]:-—}")
+    done
+    namew=$(_max_width "${names[@]}")
+    noww=$(_max_width "${shown[@]}")
 }
 
-# 某组当前选中节点
-_node_now() {
-    local enc
-    enc=$(_node_urlencode "$1")
-    _node_curl GET "/proxies/$enc" | "$BIN_YQ" -p json '.now // ""' 2>/dev/null
+# 列表与交互菜单共用的策略组显示行。
+_node_group_line() {
+    printf '%s → %s  [%s]' \
+        "$(_pad "${names[$1]}" "$namew")" \
+        "$(_pad "${nows[$1]:-—}" "$noww")" \
+        "${types[$1]}"
 }
 
 ########################################
 #            切换
 ########################################
 
-# PUT /proxies/:group  body {"name":"<member>"}；204=成功 400=不可切换 404=组不存在
+# PUT /proxies/:group；204 成功、400 不可切换、404 组不存在。
 _node_apply() {
     local group=$1 member=$2 enc body code rc
-    enc=$(_node_urlencode "$group")
+    enc=$(_urlencode "$group")
     body=$(NODE=$member "$BIN_YQ" -n -o=json '{"name": strenv(NODE)}') # 安全构造 JSON，免手动转义
     code=$(_node_curl PUT "/proxies/$enc" \
         -H 'Content-Type: application/json' --data-binary "$body" \
@@ -211,34 +279,9 @@ _node_apply() {
 }
 
 _node_use() {
-    local with_delay=false
-    local url timeout
-    local args=()
-    url=$(_node_default_delay_url)
-    timeout=$(_node_default_delay_timeout)
-
-    while [ $# -gt 0 ]; do
-        case "$1" in
-        -d | --delay)
-            with_delay=true
-            ;;
-        -u | --url)
-            _node_require_arg "$1" "${2-}" || return 1
-            url=$2
-            shift
-            ;;
-        --url=*)
-            url="${1#*=}"
-            ;;
-        -t | --timeout)
-            _node_require_arg "$1" "${2-}" || return 1
-            timeout=$2
-            shift
-            ;;
-        --timeout=*)
-            timeout="${1#*=}"
-            ;;
-        -h | --help)
+    local with_delay=false url timeout args help=false
+    _node_parse_opts use "$@" || return 1
+    if [ "$help" = true ]; then
         cat <<EOF
 
 Usage:
@@ -262,22 +305,7 @@ Examples:
 
 EOF
         return 0
-        ;;
-        --)
-            shift
-            args+=("$@")
-            break
-            ;;
-        -*)
-            _errorcat "未知选项：$1"
-            return 1
-            ;;
-        *)
-            args+=("$1")
-            ;;
-        esac
-        shift
-    done
+    fi
 
     set -- "${args[@]}"
     if [ "$with_delay" = true ]; then
@@ -335,68 +363,37 @@ EOF
         return
     }
 
-    # 先缓冲所有行并按显示宽度求列宽，再补齐输出，使各列对齐
-    local names=() types=() nows=() name type now
-    while IFS=$'\t' read -r name type now; do
-        names+=("$name")
-        types+=("$type")
-        nows+=("${now:-—}")
-    done < <(_node_groups)
-
+    local names=() types=() nows=() namew noww i
+    _node_load_groups
     [ ${#names[@]} -eq 0 ] && {
         _failcat "未获取到策略组（内核是否运行？）"
         return 1
     }
-
-    local i w namew=0 noww=0
     for i in "${!names[@]}"; do
-        w=$(_dispwidth "${names[$i]}")
-        ((w > namew)) && namew=$w
-        w=$(_dispwidth "${nows[$i]}")
-        ((w > noww)) && noww=$w
-    done
-
-    for i in "${!names[@]}"; do
-        printf '  %s → %s  [%s]\n' \
-            "$(_pad "${names[$i]}" "$namew")" \
-            "$(_pad "${nows[$i]}" "$noww")" \
-            "${types[$i]}"
+        printf '  %s\n' "$(_node_group_line "$i")"
     done
     return 0
 }
 
 # 列出某策略组的成员节点（* 标当前选中）；成员类型仅叶子节点可知，否则显示 —
 _node_list_members() {
-    local group=$1
-    [ "$(_node_classify "$group")" = group ] || {
+    local group=$1 now members=() name type
+    _node_group "$group" || {
         _failcat "策略组 [$group] 不存在"
         return 1
     }
-
-    local now members=() name
-    now=$(_node_now "$group")
-    while IFS= read -r name; do
-        [ -n "$name" ] && members+=("$name")
-    done < <(_node_members "$group")
-
     [ ${#members[@]} -eq 0 ] && {
         _failcat "策略组 [$group] 无可用节点"
         return 1
     }
 
     declare -A member_types=()
-    local type
     while IFS=$'\t' read -r name type; do
         [ -n "$name" ] && member_types["$name"]=$type
     done < <(_node_proxies)
 
-    local i w namew=0
-    for i in "${!members[@]}"; do
-        w=$(_dispwidth "${members[$i]}")
-        ((w > namew)) && namew=$w
-    done
-
-    local marker
+    local i namew marker
+    namew=$(_max_width "${members[@]}")
     for i in "${!members[@]}"; do
         marker=' '
         [ "${members[$i]}" = "$now" ] && marker='*'
@@ -412,44 +409,12 @@ _node_list_members() {
 #            交互式选择
 ########################################
 
-_node_has_fzf() {
-    command -v fzf >&/dev/null && [ -t 0 ]
-}
-
-_node_hint_fzf() {
-    [ "${_NODE_FZF_HINT_SHOWN:-false}" = true ] && return 0
-    [ -t 0 ] || return 0
-    command -v fzf >&/dev/null && return 0
-
-    _NODE_FZF_HINT_SHOWN=true
-    _ui_info '未检测到 fzf，已使用编号选择；安装 fzf 可启用搜索式选择界面。'
-}
-
-_node_fzf_preview_dir() {
-    mktemp -d "${TMPDIR:-/tmp}/clashnode-preview.XXXXXX" 2>/dev/null
-}
-
-_node_fzf_preview_cmd() {
-    printf '%s' "cat \"\$NODE_FZF_PREVIEW_DIR\"/{1}"
-}
-
-_node_selected_name() {
-    local selected=$1
-    selected=${selected#*$'\t'}
-    printf '%s\n' "${selected%%$'\t'*}"
-}
-
 # 交互选组，选中的组名输出到 stdout，菜单打到 stderr
 # $1: 提示语  $2: 过滤（selector=仅可切换组 / all=全部，默认 all）
 _node_pick_group() {
     local prompt=$1 filter=${2:-all}
-    local names=() types=() nows=() name type now i
-    while IFS=$'\t' read -r name type now; do
-        [ "$filter" = selector ] && [ "$type" != Selector ] && continue
-        names+=("$name")
-        types+=("$type")
-        nows+=("$now")
-    done < <(_node_groups)
+    local names=() types=() nows=() namew noww i
+    _node_load_groups "$filter"
 
     [ ${#names[@]} -eq 0 ] && {
         if [ "$filter" = selector ]; then
@@ -465,19 +430,10 @@ _node_pick_group() {
         return 0
     }
 
-    local w namew=0 noww=0
-    for i in "${!names[@]}"; do
-        w=$(_dispwidth "${names[$i]}")
-        ((w > namew)) && namew=$w
-        w=$(_dispwidth "${nows[$i]:-—}")
-        ((w > noww)) && noww=$w
-    done
-
-    if _node_has_fzf; then
-        local selected status preview_dir preview_args=()
-        preview_dir=$(_node_fzf_preview_dir)
+    if _has_fzf; then
+        local preview_dir member count
+        preview_dir=$(_pick_preview_dir)
         if [ -n "$preview_dir" ]; then
-            preview_args=(--preview "$(_node_fzf_preview_cmd)" --preview-window='right:45%:wrap')
             for i in "${!names[@]}"; do
                 {
                     printf '策略组\n'
@@ -485,7 +441,7 @@ _node_pick_group() {
                     printf '  类型：%s\n' "${types[$i]}"
                     printf '  当前：%s\n' "${nows[$i]:-—}"
                     printf '\n节点\n'
-                    local member count=0
+                    count=0
                     while IFS= read -r member; do
                         [ -z "$member" ] && continue
                         ((count += 1))
@@ -503,54 +459,21 @@ _node_pick_group() {
                 } >"$preview_dir/$((i + 1))"
             done
         fi
-        selected=$(
-            for i in "${!names[@]}"; do
-                printf '%s\t%s\t%s → %s  [%s]\n' \
-                    "$((i + 1))" \
-                    "${names[$i]}" \
-                    "$(_pad "${names[$i]}" "$namew")" \
-                    "$(_pad "${nows[$i]:-—}" "$noww")" \
-                    "${types[$i]}"
-            done | NODE_FZF_PREVIEW_DIR=$preview_dir fzf \
-                --height=80% \
-                --layout=reverse \
-                --border \
-                --delimiter=$'\t' \
-                --with-nth=3 \
-                --prompt="$prompt" \
-                --header='选择策略组，Enter 确认，Esc 退出' \
-                "${preview_args[@]}"
-        )
-        status=$?
-        [ -n "$preview_dir" ] && rm -rf -- "$preview_dir"
-        [ "$status" -eq 0 ] || return 1
-        [ -n "$selected" ] || return 1
-        _node_selected_name "$selected"
-        return 0
+        for i in "${!names[@]}"; do
+            printf '%s\t%s\t%s\n' "$((i + 1))" "${names[$i]}" "$(_node_group_line "$i")"
+        done | _pick_fzf "$prompt" '选择策略组，Enter 确认，Esc 退出' "$preview_dir"
+        return
     fi
 
-    _node_hint_fzf
+    _hint_fzf
 
     # 与 ls 一致：[序号] 名字 → 当前节点 [type]，按显示宽度对齐
-    local tok idxw=${#names[@]}
+    local idxw=${#names[@]}
     idxw=${#idxw} # 序号位数；[n] 整体左对齐补齐到 idxw+2
     for i in "${!names[@]}"; do
-        tok="[$((i + 1))]"
-        printf '  %-*s %s → %s  [%s]\n' \
-            $((idxw + 2)) "$tok" \
-            "$(_pad "${names[$i]}" "$namew")" \
-            "$(_pad "${nows[$i]:-—}" "$noww")" \
-            "${types[$i]}" >&2
+        printf '  %-*s %s\n' $((idxw + 2)) "[$((i + 1))]" "$(_node_group_line "$i")" >&2
     done
-    local choice
-    printf '%s' "$prompt" >&2
-    read -r choice
-    [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#names[@]} ] && {
-        printf '%s\n' "${names[$((choice - 1))]}"
-        return 0
-    }
-    _errorcat "无效选择：$choice"
-    return 1
+    _pick_read "$prompt" "${names[@]}"
 }
 
 _node_pick_proxy() {
@@ -568,17 +491,11 @@ _node_pick_proxy() {
         return 1
     }
 
-    local w namew=0
-    for i in "${!names[@]}"; do
-        w=$(_dispwidth "${names[$i]}")
-        ((w > namew)) && namew=$w
-    done
-
-    if _node_has_fzf; then
-        local selected status preview_dir preview_args=()
-        preview_dir=$(_node_fzf_preview_dir)
+    if _has_fzf; then
+        local preview_dir namew
+        namew=$(_max_width "${names[@]}")
+        preview_dir=$(_pick_preview_dir)
         if [ -n "$preview_dir" ]; then
-            preview_args=(--preview "$(_node_fzf_preview_cmd)" --preview-window='right:45%:wrap')
             for i in "${!names[@]}"; do
                 {
                     printf '节点\n'
@@ -587,105 +504,61 @@ _node_pick_proxy() {
                 } >"$preview_dir/$((i + 1))"
             done
         fi
-        selected=$(
-            for i in "${!names[@]}"; do
-                printf '%s\t%s\t%s  [%s]\n' \
-                    "$((i + 1))" \
-                    "${names[$i]}" \
-                    "$(_pad "${names[$i]}" "$namew")" \
-                    "${types[$i]}"
-            done | NODE_FZF_PREVIEW_DIR=$preview_dir fzf \
-                --height=80% \
-                --layout=reverse \
-                --border \
-                --delimiter=$'\t' \
-                --with-nth=3 \
-                --prompt="$prompt" \
-                --header='选择节点，Enter 确认，Esc 退出' \
-                "${preview_args[@]}"
-        )
-        status=$?
-        [ -n "$preview_dir" ] && rm -rf -- "$preview_dir"
-        [ "$status" -eq 0 ] || return 1
-        [ -n "$selected" ] || return 1
-        _node_selected_name "$selected"
-        return 0
+        for i in "${!names[@]}"; do
+            printf '%s\t%s\t%s  [%s]\n' \
+                "$((i + 1))" \
+                "${names[$i]}" \
+                "$(_pad "${names[$i]}" "$namew")" \
+                "${types[$i]}"
+        done | _pick_fzf "$prompt" '选择节点，Enter 确认，Esc 退出' "$preview_dir"
+        return
     fi
 
-    _node_hint_fzf
+    _hint_fzf
 
-    local tok idxw=${#names[@]}
+    local idxw=${#names[@]}
     idxw=${#idxw}
     for i in "${!names[@]}"; do
-        tok="[$((i + 1))]"
-        printf '  %-*s %s  [%s]\n' $((idxw + 2)) "$tok" "${names[$i]}" "${types[$i]}" >&2
+        printf '  %-*s %s  [%s]\n' $((idxw + 2)) "[$((i + 1))]" "${names[$i]}" "${types[$i]}" >&2
     done
-
-    local choice
-    printf '%s' "$prompt" >&2
-    read -r choice
-    [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#names[@]} ] && {
-        printf '%s\n' "${names[$((choice - 1))]}"
-        return 0
-    }
-    _errorcat "无效选择：$choice"
-    return 1
+    _pick_read "$prompt" "${names[@]}"
 }
 
 # 交互选组内节点，选中的节点名输出到 stdout，菜单打到 stderr（* 标记当前）
 _node_pick_member() {
-    local group=$1
-    local with_delay=${2:-false}
-    local url=${3:-}
-    local timeout=${4:-}
-    local now members=() name delay i marker delay_label
-    local group_json
-    group_json=$(_node_group_json "$group") # 一次拉取，本地抽取 now 与 members
-    now=$("$BIN_YQ" -p json '.now // ""' <<<"$group_json" 2>/dev/null)
-    while IFS= read -r name; do
-        [ -n "$name" ] && members+=("$name")
-    done < <("$BIN_YQ" -p json '.all // [] | .[]' <<<"$group_json" 2>/dev/null)
+    local group=$1 with_delay=${2:-false} url=${3:-} timeout=${4:-}
+    local now members=() labels=() name type delay i marker namew=0 delayw=0
+    _node_group "$group" || :
 
     [ ${#members[@]} -eq 0 ] && {
         _errorcat "策略组 [$group] 无可用节点"
         return 1
     }
 
-    declare -A delays=()
     if [ "$with_delay" = true ]; then
         _ui_step "正在测速 [$group]（可能需要数秒）..."
         [ -n "$url" ] || url=$(_node_default_delay_url)
         [ -n "$timeout" ] || timeout=$(_node_default_delay_timeout)
+        declare -A delays=()
         while IFS=$'\t' read -r name delay; do
             [ -n "$name" ] && delays["$name"]=$delay
-        done < <(_node_delay_rows "$group" "$url" "$timeout" "${members[@]}")
-    fi
-
-    local delayw=0 namew=0 w pad
-    if [ "$with_delay" = true ]; then
+        done < <(_node_delay_rows "$group" "$(_node_delay_query "$url" "$timeout")" "${members[@]}")
         for i in "${!members[@]}"; do
-            w=$(_dispwidth "${members[$i]}")
-            ((w > namew)) && namew=$w
-            delay_label=$(_node_delay_label "${delays[${members[$i]}]:-}")
-            w=$(_dispwidth "$delay_label")
-            ((w > delayw)) && delayw=$w
+            labels+=("$(_node_delay_label "${delays[${members[$i]}]:-}")")
         done
+        namew=$(_max_width "${members[@]}")
+        delayw=$(_max_width "${labels[@]}")
     fi
 
-    if _node_has_fzf; then
-        local selected fzf_header='* 表示当前节点；Enter 切换，Esc 退出'
-        [ "$with_delay" = true ] && {
-            fzf_header='* 表示当前节点；Enter 切换，Esc 退出'
-        }
+    if _has_fzf; then
         declare -A proxy_types=()
         while IFS=$'\t' read -r name type; do
             [ -n "$name" ] && proxy_types["$name"]=$type
         done < <(_node_proxies)
 
-        local status preview_dir preview_args=()
-        preview_dir=$(_node_fzf_preview_dir)
+        local preview_dir
+        preview_dir=$(_pick_preview_dir)
         if [ -n "$preview_dir" ]; then
-            preview_args=(--preview "$(_node_fzf_preview_cmd)" --preview-window='right:45%:wrap')
             for i in "${!members[@]}"; do
                 {
                     printf '节点\n'
@@ -698,83 +571,64 @@ _node_pick_member() {
                         printf '  状态：可切换\n'
                     fi
                     if [ "$with_delay" = true ]; then
-                        delay_label=$(_node_delay_label "${delays[${members[$i]}]:-}")
-                        printf '  延迟：%s\n' "$delay_label"
+                        printf '  延迟：%s\n' "${labels[$i]}"
                     fi
                 } >"$preview_dir/$((i + 1))"
             done
         fi
 
-        selected=$(
-            for i in "${!members[@]}"; do
-                marker=' '
-                [ "${members[$i]}" = "$now" ] && marker='*'
-                if [ "$with_delay" = true ]; then
-                    delay_label=$(_node_delay_label "${delays[${members[$i]}]:-}")
-                    pad=$((delayw - $(_dispwidth "$delay_label")))
-                    printf '%s\t%s\t%s %s  %s\n' \
-                        "$((i + 1))" \
-                        "${members[$i]}" \
-                        "$marker" \
-                        "$(_pad "${members[$i]}" "$namew")" \
-                        "$(_node_spaces "$pad")$(_node_delay_color "$delay_label")"
-                else
-                    printf '%s\t%s\t%s %s\n' "$((i + 1))" "${members[$i]}" "$marker" "${members[$i]}"
-                fi
-            done | NODE_FZF_PREVIEW_DIR=$preview_dir fzf \
-                --height=80% \
-                --layout=reverse \
-                --border \
-                --ansi \
-                --delimiter=$'\t' \
-                --with-nth=3 \
-                --prompt="${group} > " \
-                --header="$fzf_header" \
-                "${preview_args[@]}"
-        )
-        status=$?
-        [ -n "$preview_dir" ] && rm -rf -- "$preview_dir"
-        [ "$status" -eq 0 ] || return 1
-        [ -n "$selected" ] || return 1
-        _node_selected_name "$selected"
-        return 0
+        for i in "${!members[@]}"; do
+            marker=' '
+            [ "${members[$i]}" = "$now" ] && marker='*'
+            printf '%s\t%s\t%s %s\n' "$((i + 1))" "${members[$i]}" "$marker" "$(_node_member_cell "$i")"
+        done | _pick_fzf "${group} > " '* 表示当前节点；Enter 切换，Esc 退出' "$preview_dir" --ansi
+        return
     fi
 
-    _node_hint_fzf
+    _hint_fzf
 
-    local marker tok idxw=${#members[@]}
+    local idxw=${#members[@]}
     idxw=${#idxw} # 序号位数；[n] 整体左对齐补齐到 idxw+2，使括号紧凑且名字列对齐
     for i in "${!members[@]}"; do
         marker=' '
         [ "${members[$i]}" = "$now" ] && marker='*'
-        tok="[$((i + 1))]"
-        if [ "$with_delay" = true ]; then
-            delay_label=$(_node_delay_label "${delays[${members[$i]}]:-}")
-            pad=$((delayw - $(_dispwidth "$delay_label")))
-            printf '%s %-*s %s  %s\n' \
-                "$marker" $((idxw + 2)) "$tok" \
-                "$(_pad "${members[$i]}" "$namew")" \
-                "$(_node_spaces "$pad")$(_node_delay_color "$delay_label")" >&2
-        else
-            printf '%s %-*s %s\n' "$marker" $((idxw + 2)) "$tok" "${members[$i]}" >&2
-        fi
+        printf '%s %-*s %s\n' "$marker" $((idxw + 2)) "[$((i + 1))]" "$(_node_member_cell "$i")" >&2
     done
-    local choice
-    printf '%s' '请选择要切换到的节点（* 为当前）：' >&2
-    read -r choice
-    [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#members[@]} ] && {
-        printf '%s\n' "${members[$((choice - 1))]}"
-        return 0
-    }
-    _errorcat "无效选择：$choice"
-    return 1
+    _pick_read '请选择要切换到的节点（* 为当前）：' "${members[@]}"
+}
+
+# 组内节点显示列；测速时补齐名称，附上右对齐、着色的延迟。
+_node_member_cell() {
+    local i=$1
+    if [ "$with_delay" = true ]; then
+        printf '%s  %*s%s' \
+            "$(_pad "${members[$i]}" "$namew")" \
+            $((delayw - $(_dispwidth "${labels[$i]}"))) '' \
+            "$(_node_delay_color "${labels[$i]}")"
+    else
+        printf '%s' "${members[$i]}"
+    fi
 }
 
 ########################################
 #            延迟测速
 ########################################
 
-# 读取 stdin 的 "name<TAB>delay" 行，按延迟升序着色输出（超时排末尾）
+# 超时、低于 200ms、低于 500ms 及其余延迟的颜色。
+_node_delay_rgb() {
+    local delay=$1
+    if ! [[ "$delay" =~ ^[0-9]+$ ]] || [ "$delay" -le 0 ]; then
+        printf '249;47;96'
+    elif [ "$delay" -lt 200 ]; then
+        printf '38;222;129'
+    elif [ "$delay" -lt 500 ]; then
+        printf '254;211;48'
+    else
+        printf '253;121;168'
+    fi
+}
+
+# 读取 "name<TAB>delay" 行，按延迟排序输出（超时排末尾）。
 _node_print_delays() {
     local name delay
     while IFS=$'\t' read -r name delay; do
@@ -784,22 +638,19 @@ _node_print_delays() {
             printf '%010d\t%s\t%s\n' 9999999999 "$name" "timeout"
         fi
     done | sort -n | {
-        local disp color text
+        local disp text
         while IFS=$'\t' read -r _ name disp; do
             if [ "$disp" = timeout ]; then
-                color=#f92f60
                 text=$(printf '  ✗ %-26s 超时' "$name")
-            elif [ "$disp" -lt 200 ]; then
-                color=#26de81
-                text=$(printf '  ● %-26s %sms' "$name" "$disp")
-            elif [ "$disp" -lt 500 ]; then
-                color=#fed330
-                text=$(printf '  ● %-26s %sms' "$name" "$disp")
             else
-                color=#fd79a8
                 text=$(printf '  ● %-26s %sms' "$name" "$disp")
             fi
-            _color_log "$color" "$text"
+            # fd1 会随调用方重定向，因此按实际输出目标判定颜色。
+            if _ui_color_enabled 1; then
+                printf '\033[38;2;%sm%s\033[0m\n' "$(_node_delay_rgb "$disp")" "$text"
+            else
+                printf '%s\n' "$text"
+            fi
         done
     }
 }
@@ -814,165 +665,93 @@ _node_delay_label() {
 }
 
 _node_delay_color() {
-    local label=$1 color
-    case $label in
-    timeout)
-        color=#f92f60
-        ;;
-    *ms)
-        local delay=${label%ms}
-        if [ "$delay" -lt 200 ]; then
-            color=#26de81
-        elif [ "$delay" -lt 500 ]; then
-            color=#fed330
-        else
-            color=#fd79a8
-        fi
-        ;;
-    *)
-        color=#f92f60
-        ;;
-    esac
-    _node_color_text "$color" "$label"
+    printf '\033[38;2;%sm%s\033[0m' "$(_node_delay_rgb "${1%ms}")" "$1"
 }
 
-_node_color_text() {
-    local color=$1 text=$2 hex r g b
-    hex=${color#\#}
-    r=$((16#${hex:0:2}))
-    g=$((16#${hex:2:2}))
-    b=$((16#${hex:4:2}))
-    printf '\033[38;2;%s;%s;%sm%s\033[0m' "$r" "$g" "$b" "$text"
-}
-
-_node_spaces() {
-    local count=$1
-    ((count < 1)) && return 0
-    printf '%*s' "$count" ''
-}
-
-# 主路径：GET /group/:name/delay 返回 {name:ms}；按组成员补全超时项
-_node_delay_primary() {
-    local group=$1 body=$2
-    local name delay
-    declare -A delays=()
-    while IFS=$'\t' read -r name delay; do
-        delays["$name"]=$delay
-    done < <("$BIN_YQ" -p json 'to_entries | .[] | [.key, .value] | @tsv' <<<"$body" 2>/dev/null)
-
-    {
-        while IFS= read -r name; do
-            [ -z "$name" ] && continue
-            printf '%s\t%s\n' "$name" "${delays[$name]:-}"
-        done < <(_node_members "$group")
-    } | _node_print_delays
+_node_delay_query() {
+    printf 'timeout=%s&url=%s' "$2" "$(_urlencode "$1")"
 }
 
 _node_delay_one() {
-    local name=$1 qs=$2 enc resp delay
-    enc=$(_node_urlencode "$name")
-    resp=$(_node_curl GET "/proxies/$enc/delay?$qs")
+    local name=$1 qs=$2 resp delay
+    resp=$(_node_curl GET "/proxies/$(_urlencode "$name")/delay?$qs")
     delay=$("$BIN_YQ" -p json '.delay // ""' <<<"$resp" 2>/dev/null)
     printf '%s\t%s\n' "$name" "$delay"
 }
 
+# 旧内核不支持组测速时，复用逐节点接口并限制并发数。
 _node_delay_member_rows() {
-    local url=$1 timeout=$2
-    shift 2
-    local members=("$@") name
-    local qs concurrency active=0
-    qs="timeout=${timeout}&url=$(_node_urlencode "$url")"
+    local qs=$1 name concurrency active=0
+    shift
     concurrency=${CLASHCTL_NODE_DELAY_CONCURRENCY:-8}
     [[ "$concurrency" =~ ^[0-9]+$ ]] || concurrency=8
     ((concurrency < 1)) && concurrency=1
-
-    {
-        for name in "${members[@]}"; do
-            _node_delay_one "$name" "$qs" &
-            ((active += 1))
-            if ((active >= concurrency)); then
-                wait
-                active=0
-            fi
-        done
-        wait
-    }
+    for name; do
+        _node_delay_one "$name" "$qs" &
+        ((active += 1))
+        if ((active >= concurrency)); then
+            wait
+            active=0
+        fi
+    done
+    wait
 }
 
+# 404/405 表示旧内核不支持组测速；504 表示组内节点均超时，不重复测速。
 _node_delay_rows() {
-    local group=$1 url=$2 timeout=$3
-    shift 3
-    local members=("$@")
-    local enc qs resp code body name delay
-    enc=$(_node_urlencode "$group")
-    qs="timeout=${timeout}&url=$(_node_urlencode "$url")"
-    resp=$(_node_curl GET "/group/$enc/delay?$qs" -w $'\n%{http_code}')
+    local group=$1 qs=$2 resp code name delay
+    shift 2
+    declare -A delays=()
+    resp=$(_node_curl GET "/group/$(_urlencode "$group")/delay?$qs" -w $'\n%{http_code}') || {
+        _errorcat '组测速失败：无法连接控制器或请求超时'
+        return 1
+    }
     code=${resp##*$'\n'}
-    body=${resp%$'\n'*}
-
-    if [ "$code" = 200 ]; then
-        declare -A delays=()
+    case $code in
+    200)
         while IFS=$'\t' read -r name delay; do
             [ -n "$name" ] && delays["$name"]=$delay
-        done < <("$BIN_YQ" -p json 'to_entries | .[] | [.key, .value] | @tsv' <<<"$body" 2>/dev/null)
-
-        for name in "${members[@]}"; do
-            printf '%s\t%s\n' "$name" "${delays[$name]:-}"
-        done
-        return 0
-    fi
-
-    _node_delay_member_rows "$url" "$timeout" "${members[@]}"
+        done < <("$BIN_YQ" -p json 'to_entries | .[] | [.key, .value] | @tsv' <<<"${resp%$'\n'*}" 2>/dev/null)
+        ;;
+    404 | 405)
+        _node_delay_member_rows "$qs" "$@"
+        return
+        ;;
+    504) ;;
+    *)
+        _errorcat "组测速失败：控制器返回 $code"
+        return 1
+        ;;
+    esac
+    for name; do
+        printf '%s\t%s\n' "$name" "${delays[$name]:-}"
+    done
 }
 
-# 回退路径：并发 GET /proxies/:proxy/delay（旧内核无 /group 端点时）
-_node_delay_fallback() {
-    local group=$1 url=$2 timeout=$3
-    local members=() name
+_node_delay_group() {
+    local group=$1 url=$2 timeout=$3 members=() name rows
+    _ui_emit_fd 1 step "正在测速策略组 [$group]（可能需要数秒）..."
     while IFS= read -r name; do
         [ -n "$name" ] && members+=("$name")
     done < <(_node_members "$group")
-
     [ ${#members[@]} -eq 0 ] && {
         _failcat "策略组 [$group] 无节点或不存在"
         return 1
     }
-
-    _node_delay_member_rows "$url" "$timeout" "${members[@]}" | _node_print_delays
-}
-
-_node_delay_group() {
-    local group=$1 url=$2 timeout=$3
-    local enc qs resp code body
-    enc=$(_node_urlencode "$group")
-    qs="timeout=${timeout}&url=$(_node_urlencode "$url")"
-
-    _ui_emit_fd 1 step "正在测速策略组 [$group]（可能需要数秒）..."
-    resp=$(_node_curl GET "/group/$enc/delay?$qs" -w $'\n%{http_code}')
-    code=${resp##*$'\n'}
-    body=${resp%$'\n'*}
-
-    case "$code" in
-    200) _node_delay_primary "$group" "$body" ;;
-    *) _node_delay_fallback "$group" "$url" "$timeout" ;; # 旧内核无 /group 端点：回退逐节点
-    esac
+    rows=$(_node_delay_rows "$group" "$(_node_delay_query "$url" "$timeout")" "${members[@]}") || return 1
+    _node_print_delays <<<"$rows"
 }
 
 _node_delay_proxy() {
     local proxy=$1 url=$2 timeout=$3
     _ui_emit_fd 1 step "正在测速节点 [$proxy]..."
-    _node_delay_member_rows "$url" "$timeout" "$proxy" | _node_print_delays
+    _node_delay_one "$proxy" "$(_node_delay_query "$url" "$timeout")" | _node_print_delays
 }
 
 _node_delay() {
-    local url timeout mode=auto
-    local args=()
-    url=$(_node_default_delay_url)
-    timeout=$(_node_default_delay_timeout)
-
-    while [ $# -gt 0 ]; do
-        case "$1" in
-        -h | --help)
+    local url timeout args mode=auto help=false
+    _node_parse_opts delay "$@" || return 1
+    if [ "$help" = true ]; then
         cat <<EOF
 
 Usage:
@@ -1003,52 +782,7 @@ Examples:
 
 EOF
         return 0
-        ;;
-        -g | --group)
-            [ "$mode" = proxy ] && {
-                _errorcat "-g/--group 与 -p/--proxy 不能同时使用"
-                return 1
-            }
-            mode=group
-            ;;
-        -p | --proxy)
-            [ "$mode" = group ] && {
-                _errorcat "-g/--group 与 -p/--proxy 不能同时使用"
-                return 1
-            }
-            mode=proxy
-            ;;
-        -u | --url)
-            _node_require_arg "$1" "${2-}" || return 1
-            url=$2
-            shift
-            ;;
-        --url=*)
-            url="${1#*=}"
-            ;;
-        -t | --timeout)
-            _node_require_arg "$1" "${2-}" || return 1
-            timeout=$2
-            shift
-            ;;
-        --timeout=*)
-            timeout="${1#*=}"
-            ;;
-        --)
-            shift
-            args+=("$@")
-            break
-            ;;
-        -*)
-            _errorcat "未知选项：$1"
-            return 1
-            ;;
-        *)
-            args+=("$1")
-            ;;
-        esac
-        shift
-    done
+    fi
 
     _node_validate_delay_url "$url" || return 1
     _node_validate_delay_timeout "$timeout" || return 1
@@ -1060,9 +794,13 @@ EOF
         return 1
     }
 
+    # 不指定名称时，除 -p 外都交互选择策略组
+    if [ -z "$target" ] && [ "$mode" != proxy ]; then
+        target=$(_node_pick_group "请选择要测速的策略组：" all) || return 1
+        mode=group
+    fi
     case $mode in
     group)
-        [ -z "$target" ] && { target=$(_node_pick_group "请选择要测速的策略组：" all) || return 1; }
         _node_delay_group "$target" "$url" "$timeout"
         ;;
     proxy)
@@ -1075,11 +813,6 @@ EOF
         _node_delay_proxy "$target" "$url" "$timeout"
         ;;
     auto)
-        if [ -z "$target" ]; then
-            target=$(_node_pick_group "请选择要测速的策略组：" all) || return 1
-            _node_delay_group "$target" "$url" "$timeout"
-            return
-        fi
         case $(_node_classify "$target") in
         group) _node_delay_group "$target" "$url" "$timeout" ;;
         proxy) _node_delay_proxy "$target" "$url" "$timeout" ;;

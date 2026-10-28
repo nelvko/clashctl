@@ -38,28 +38,52 @@ _tun_pid_owns_device() {
     return 1
 }
 
-_tun_is_active() {
-    service_is_active >/dev/null 2>&1 || return 1
-    local enabled device link pid ownership=2 api_available=false
-    if IFS=$'\t' read -r enabled device < <(_tun_api_state); then
-        api_available=true
-        [ "$enabled" = true ] || return 1
-    else
+# 返回 0=已启用、1=关闭、2=无法检测，并保存实际设备名。
+# status 传入已查询的 PID；无参数时沿用 tunstatus 的本地配置与载波兜底规则。
+_tun_probe() {
+    local pid=${1:-} api_state enabled='' device='' link ownership=2 link_rc=0
+    _TUN_DEVICE=''
+    if api_state=$(_tun_api_state); then
+        IFS=$'\t' read -r enabled device <<<"$api_state"
+        [ "$enabled" != false ] || return 1
+    elif [ "$#" -eq 0 ]; then
         _is_tun_enabled || return 1
     fi
-    [ -n "$device" ] || device=$("$BIN_YQ" '.tun.device // "Meta"' "$CLASH_CONFIG_RUNTIME")
+    [ -n "$device" ] || device=$("$BIN_YQ" '.tun.device // "Meta"' "$CLASH_CONFIG_RUNTIME") || device=''
     [ -n "$device" ] || device=Meta
-    link=$(ip -o link show dev "$device" 2>/dev/null) || return 1
-    [[ $link =~ \<([^\>]*,)?UP(,[^\>]*)?\> ]] || return 1
-    if pid=$(service_main_pid 2>/dev/null); then
+    _TUN_DEVICE=$device
+    # 网卡名和查询结果只作为终端文字显示，不接收控制字符。
+    if [ "$#" -gt 0 ] && [[ $device == *[[:cntrl:]]* ]]; then
+        return 2
+    fi
+    command -v ip >/dev/null 2>&1 || return 2
+    link=$(ip -o link show dev "$device" 2>/dev/null) || link_rc=$?
+    if [ "$link_rc" -ne 0 ] || [[ ! $link =~ \<([^\>]*,)?UP(,[^\>]*)?\> ]]; then
+        [ "$enabled" = true ] && [ "$link_rc" -le 1 ] && return 1
+        return 2
+    fi
+    if [ "$#" -eq 0 ]; then
+        pid=$(service_main_pid 2>/dev/null) || pid=''
+        [ -n "$pid" ] || ! _is_root || return 1
+    fi
+    if [[ $pid =~ ^[0-9]+$ ]]; then
         ownership=0
         _tun_pid_owns_device "$pid" "$device" || ownership=$?
-        [ "$ownership" -eq 2 ] || return "$ownership"
-    elif _is_root; then
-        return 1
     fi
+    [ "$ownership" -ne 0 ] || return 0
     # 普通用户可能不能读特权进程的 fdinfo；此时同时验证 API 与网卡载波。
-    [ "$api_available" = true ] && [[ $link == *LOWER_UP* && $link != *NO-CARRIER* ]]
+    if [ "$ownership" -eq 2 ] && [ "$enabled" = true ] &&
+        [[ $link == *LOWER_UP* && $link != *NO-CARRIER* ]] &&
+        { [ "$#" -eq 0 ] || ! _is_root; }; then
+        return 0
+    fi
+    [ "$ownership" -eq 1 ] && [ "$enabled" = true ] && return 1
+    return 2
+}
+
+_tun_is_active() {
+    service_is_active >/dev/null 2>&1 || return 1
+    _tun_probe || return 1
 }
 
 _tun_check_device_available() {

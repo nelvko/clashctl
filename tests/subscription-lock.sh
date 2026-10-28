@@ -63,7 +63,7 @@ service_log_path="$WORK_DIR/kernel.log"
 
 # 只替换端口探测和 PID 记录；后台启动与两种锁使用真实实现。
 fixture_yq() { printf '25500\n'; }
-_detect_subconverter_port() { BIN_SUBCONVERTER_PORT=25500; }
+_is_port_used() { return 1; }
 _service_process_record_pid() { return 1; }
 _service_process_record_create() { return 0; }
 wait_ready() {

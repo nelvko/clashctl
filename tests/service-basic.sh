@@ -61,4 +61,13 @@ uninstall_service || fail 'service uninstall failed'
     service_sudo_start || rc=$?
     [ "$rc" = 7 ] || fail 'root start did not preserve failure status'
 )
+# root 停止失败直接返回，避免二次进入 sudo helper。
+(
+    _is_root() { return 0; }
+    service_stop() { return 7; }
+    sudo() { fail 'root stop fell through to sudo helper'; }
+    rc=0
+    service_sudo_stop || rc=$?
+    [ "$rc" = 7 ] || fail 'root stop did not preserve failure status'
+)
 printf 'service-basic: ok\n'

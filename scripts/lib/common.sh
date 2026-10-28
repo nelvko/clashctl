@@ -11,8 +11,6 @@ CLASH_DATA_DIR="${CLASHCTL_HOME}/data"
 CLASH_CONFIG_BASE="${CLASH_DATA_DIR}/config.yaml"
 CLASH_CONFIG_MIXIN="${CLASH_DATA_DIR}/mixin.yaml"
 CLASH_CONFIG_RUNTIME="${CLASH_DATA_DIR}/runtime.yaml"
-# 旧 config.sh 的合并回滚临时文件（本次迁移未纳入 config.sh，故保留符号）
-CLASH_CONFIG_TEMP="${CLASH_DATA_DIR}/temp.yaml"
 # 订阅下载/校验失败时保留的调试产物（稳定路径，便于排障）
 CLASH_CONFIG_DEBUG="${CLASH_DATA_DIR}/last-failed.yaml"
 CLASH_CONFIG_DEBUG_RAW="${CLASH_DATA_DIR}/last-failed.raw"
@@ -89,29 +87,23 @@ _read_subscription_url() {
 }
 
 _is_port_used() {
-    local port=${1:-} sockets
+    local port=${1:-} sockets field
     [[ $port =~ ^[0-9]+$ ]] && [ "${#port}" -le 5 ] &&
         ((10#$port >= 1 && 10#$port <= 65535)) || return 1
     port=$((10#$port))
 
+    # 本地地址在 ss 输出的第 5 列、netstat 输出的第 4 列。
     if command -v ss >/dev/null 2>&1 &&
         sockets=$(ss -H -lntu "sport = :$port" 2>/dev/null); then
-        awk -v expected="$port" '
-            {
-                local_addr = $5
-                sub(/^.*:/, "", local_addr)
-                if (local_addr == expected) found = 1
-            }
-            END { exit(found ? 0 : 1) }
-        ' <<<"$sockets"
-        return
+        field=5
+    else
+        command -v netstat >/dev/null 2>&1 || return 1
+        sockets=$(netstat -lntu 2>/dev/null) || return 1
+        field=4
     fi
-
-    command -v netstat >/dev/null 2>&1 || return 1
-    sockets=$(netstat -lntu 2>/dev/null) || return 1
-    awk -v expected="$port" '
+    awk -v expected="$port" -v field="$field" '
         {
-            local_addr = $4
+            local_addr = $field
             sub(/^.*:/, "", local_addr)
             if (local_addr == expected) found = 1
         }
@@ -234,35 +226,13 @@ _install_ui_info() { _install_ui_emit_fd 2 info "$*"; }
 _install_ui_ok() { _install_ui_emit_fd 2 ok "$*"; }
 _install_ui_warn() { _install_ui_emit_fd 2 warn "$*"; }
 _install_ui_error() { _install_ui_emit_fd 2 error "$*"; }
-_install_ui_ok_out() { _install_ui_emit_fd 1 ok "$*"; }
 
-_ui_emit() {
-    _ui_emit_fd 2 "$@"
-}
-
-_ui_step() {
-    _ui_emit step "$*"
-}
-
-_ui_info() {
-    _ui_emit info "$*"
-}
-
-_ui_ok() {
-    _ui_emit ok "$*"
-}
-
-_ui_warn() {
-    _ui_emit warn "$*"
-}
-
-_ui_error() {
-    _ui_emit error "$*"
-}
-
-_ui_ok_out() {
-    _ui_emit_fd 1 ok "$*"
-}
+_ui_step() { _ui_emit_fd 2 step "$*"; }
+_ui_info() { _ui_emit_fd 2 info "$*"; }
+_ui_ok() { _ui_emit_fd 2 ok "$*"; }
+_ui_warn() { _ui_emit_fd 2 warn "$*"; }
+_ui_error() { _ui_emit_fd 2 error "$*"; }
+_ui_ok_out() { _ui_emit_fd 1 ok "$*"; }
 
 _ui_fail() {
     _ui_emit_fd 2 fail "$*"
@@ -284,26 +254,6 @@ _ui_detail() {
     return 0
 }
 
-_color_log() {
-    local color="$1"
-    local msg="$2"
-
-    # fd1 会随调用方重定向，因此仍按实际输出目标判定颜色。
-    _ui_color_enabled 1 || {
-        printf '%s\n' "$msg"
-        return
-    }
-
-    local hex="${color#\#}"
-    local r=$((16#${hex:0:2}))
-    local g=$((16#${hex:2:2}))
-    local b=$((16#${hex:4:2}))
-
-    local color_code="\033[38;2;${r};${g};${b}m"
-    local reset_code="\033[0m"
-
-    printf "%b%s%b\n" "$color_code" "$msg" "$reset_code"
-}
 
 _okcat() {
     local emoji=''
@@ -361,6 +311,97 @@ _pad() {
     pad=$((target - w))
     ((pad < 0)) && pad=0
     printf '%s%*s' "$s" "$pad" ''
+}
+
+# 按字节编码 URL 中的组名、节点名和认证信息。
+_urlencode() {
+    local LC_ALL=C value=$1 encoded='' character code index
+    for ((index = 0; index < ${#value}; index++)); do
+        character=${value:$index:1}
+        case $character in
+        [a-zA-Z0-9._~-]) encoded+=$character ;;
+        *)
+            printf -v code '%%%02X' "'$character"
+            encoded+=$code
+            ;;
+        esac
+    done
+    printf '%s' "$encoded"
+}
+
+_has_fzf() {
+    command -v fzf >&/dev/null && [ -t 0 ]
+}
+
+_hint_fzf() {
+    [ -t 0 ] || return 0
+    command -v fzf >&/dev/null && return 0
+    _ui_info '未检测到 fzf，已使用编号选择；安装 fzf 可启用搜索式选择界面。'
+}
+
+_max_width() {
+    local s w max=0
+    for s; do
+        w=$(_dispwidth "$s")
+        ((w > max)) && max=$w
+    done
+    printf '%d' "$max"
+}
+
+_pick_preview_dir() {
+    mktemp -d "${TMPDIR:-/tmp}/clashctl-pick.XXXXXX" 2>/dev/null
+}
+
+# stdin 每行是“序号<TAB>名称<TAB>显示文本”，stdout 返回选中的名称。
+# 预览目录中的文件按序号命名，退出时一并清理。
+_pick_fzf() {
+    local prompt=$1 header=$2 preview_dir=$3 selected status preview_args=()
+    shift 3
+    # fzf 在其子 shell 中展开 {1} 与 $CLASHCTL_PICK_PREVIEW_DIR，故此处刻意用单引号
+    # shellcheck disable=SC2016
+    [ -n "$preview_dir" ] && preview_args=(--preview 'cat "$CLASHCTL_PICK_PREVIEW_DIR"/{1}' --preview-window='right:45%:wrap')
+    selected=$(CLASHCTL_PICK_PREVIEW_DIR=$preview_dir fzf \
+        --height=80% \
+        --layout=reverse \
+        --border \
+        --delimiter=$'\t' \
+        --with-nth=3 \
+        --prompt="$prompt" \
+        --header="$header" \
+        "${preview_args[@]}" "$@")
+    status=$?
+    [ -n "$preview_dir" ] && rm -rf -- "$preview_dir"
+    [ "$status" -eq 0 ] && [ -n "$selected" ] || return 1
+    selected=${selected#*$'\t'}
+    printf '%s\n' "${selected%%$'\t'*}"
+}
+
+_pick_read() {
+    local prompt=$1 choice
+    shift
+    printf '%s' "$prompt" >&2
+    read -r choice
+    [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le $# ] && {
+        printf '%s\n' "${@:choice:1}"
+        return 0
+    }
+    _errorcat "无效选择：$choice"
+    return 1
+}
+
+_fish_quote() {
+    local value=${1//\\/\\\\}
+    value=${value//\'/\\\'}
+    printf "'%s'" "$value"
+}
+
+# 输出替代端口；原端口空闲返回 1，无可用端口返回 2。
+_replacement_port() {
+    local label=$1 port=$2 new_port
+    _is_port_used "$port" || return 1
+    new_port=$(_get_random_port) || return 2
+    _ui_warn "端口冲突：[$label] $port，随机分配 $new_port"
+    printf '%s\n' "$new_port"
 }
 
 _set_env() {
@@ -536,9 +577,7 @@ _remove_source_block() {
 }
 
 _fish_home_export() {
-    local quoted=${CLASHCTL_HOME//\\/\\\\}
-    quoted=${quoted//\'/\\\'}
-    printf "set -gx CLASHCTL_HOME '%s'\n" "$quoted"
+    printf 'set -gx CLASHCTL_HOME %s\n' "$(_fish_quote "$CLASHCTL_HOME")"
 }
 
 # 将 clashctl.fish 以内容快照方式写入 fish 配置；内容无变化时也视为成功。

@@ -25,7 +25,6 @@ clashstart() {
         _ui_detail '修复' "CLASHCTL_HOME=$CLASHCTL_HOME bash $CLASHCTL_HOME/install.sh"
         return 1
     fi
-    _require_base_config || return 1
     _merge_config || return 1
     _detect_proxy_port || return 1
     _detect_ext_addr || return 1

@@ -62,7 +62,12 @@ clashstatus() {
     tun_label=$(_status_tun_label "$kernel_state" "$pid")
     subscription_label=$(_status_subscription_label)
     dashboard_url=$(_status_dashboard_url) || dashboard_url=''
-    _status_proxy_addresses
+    if [ ! -e "$CLASH_CONFIG_RUNTIME" ]; then
+        http_address='' socks_address=''
+    elif ! _proxy_addresses; then
+        http_address='无法读取' socks_address='无法读取'
+    fi
+    : "${http_address:=未配置}" "${socks_address:=未配置}"
     local verbose_pid=''
     if [ "${1:-}" = --verbose ]; then
         verbose_pid=$pid
@@ -92,42 +97,18 @@ _status_format_uptime() {
 }
 
 _status_tun_label() {
-    local kernel_state=$1 pid=$2 api_state='' enabled='' device='' link ownership=2 link_rc=0
+    local kernel_state=$1 pid=$2 rc=0
     case $kernel_state in
     stopped | failed) printf '关闭\n'; return ;;
     running) ;;
     *) printf '无法检测\n'; return ;;
     esac
-    if api_state=$(_tun_api_state 2>/dev/null); then
-        IFS=$'\t' read -r enabled device <<<"$api_state"
-        [ "$enabled" != false ] || { printf '关闭\n'; return; }
-    fi
-    if [ -z "$device" ]; then
-        device=$("$BIN_YQ" '.tun.device // "Meta"' "$CLASH_CONFIG_RUNTIME" 2>/dev/null) || device=''
-    fi
-    [ -n "$device" ] || device=Meta
-    # 网卡名和查询结果只作为终端文字显示，不接收控制字符。
-    if [[ $device == *[[:cntrl:]]* ]] || ! command -v ip >/dev/null 2>&1; then
-        printf '无法检测\n'
-        return
-    fi
-    link=$(ip -o link show dev "$device" 2>/dev/null) || link_rc=$?
-    if [ "$link_rc" -ne 0 ] || [[ ! $link =~ \<([^\>]*,)?UP(,[^\>]*)?\> ]]; then
-        if [ "$enabled" = true ] && [ "$link_rc" -le 1 ]; then printf '关闭\n'; else printf '无法检测\n'; fi
-        return
-    fi
-    if [[ $pid =~ ^[0-9]+$ ]]; then
-        ownership=0
-        _tun_pid_owns_device "$pid" "$device" 2>/dev/null || ownership=$?
-    fi
-    if [ "$ownership" -eq 0 ] ||
-        { [ "$ownership" -eq 2 ] && ! _is_root && [ "$enabled" = true ] && [[ $link == *LOWER_UP* && $link != *NO-CARRIER* ]]; }; then
-        printf '已启用（%s）\n' "$device"
-    elif [ "$ownership" -eq 1 ] && [ "$enabled" = true ]; then
-        printf '关闭\n'
-    else
-        printf '无法检测\n'
-    fi
+    _tun_probe "$pid" 2>/dev/null || rc=$?
+    case $rc in
+    0) printf '已启用（%s）\n' "$_TUN_DEVICE" ;;
+    1) printf '关闭\n' ;;
+    *) printf '无法检测\n' ;;
+    esac
 }
 
 _status_dashboard_url() {
@@ -143,8 +124,8 @@ _status_dashboard_url() {
     esac
     [ -f "$ui_dir/index.html" ] || return 1
     [[ $controller == *:* ]] || return 1
-    port=$(_status_proxy_port "${controller##*:}") || return 1
-    host=$(_status_local_host "${controller%:*}") || return 1
+    port=$(_connect_port "${controller##*:}") || return 1
+    host=$(_connect_host "${controller%:*}") || return 1
     printf 'http://%s:%s/ui\n' "$host" "$port"
 }
 
@@ -160,96 +141,9 @@ _status_subscription_label() {
 
 # 仅从运行配置生成可复制的连接地址，不调整端口或修改配置。
 # http_address/socks_address 由 clashstatus 的局部变量接收。
-_status_proxy_addresses() {
-    http_address='未配置'
-    socks_address='未配置'
-    [ -e "$CLASH_CONFIG_RUNTIME" ] || return 0
 
-    local values mixed_port http_port socks_port bind_addr allow_lan host port auth_base64 auth='' auth_prefix=''
-    if ! values=$("$BIN_YQ" -er 'select(tag == "!!map") |
-        [.mixed-port // 0, .port // 0, .socks-port // 0,
-         .bind-address // "*", .allow-lan // false,
-         (.authentication[0] // "" | @base64)] | @tsv' "$CLASH_CONFIG_RUNTIME" 2>/dev/null); then
-        http_address='无法读取'
-        socks_address='无法读取'
-        return 0
-    fi
-    # 非空白分隔符保留空字段；认证字段用 base64 避免换行、制表符干扰拆分。
-    values=${values//$'\t'/$'\x1f'}
-    IFS=$'\x1f' read -r mixed_port http_port socks_port bind_addr allow_lan auth_base64 <<<"$values"
-    if [ -n "$auth_base64" ]; then
-        if ! auth=$(printf '%s' "$auth_base64" | base64 --decode 2>/dev/null && printf '.'); then
-            http_address='无法读取'
-            socks_address='无法读取'
-            return 0
-        fi
-        auth=${auth%.}
-        if [ -n "$auth" ]; then
-            case $auth in
-            *:*) auth_prefix="$(_status_urlencode "${auth%%:*}"):$(_status_urlencode "${auth#*:}")@" ;;
-            *) auth_prefix="$(_status_urlencode "$auth")@" ;;
-            esac
-        fi
-    fi
-    case $allow_lan in
-    false) host=127.0.0.1 ;;
-    true)
-        if ! host=$(_status_local_host "$bind_addr"); then
-            http_address='无法读取'
-            socks_address='无法读取'
-            return 0
-        fi
-        ;;
-    *)
-        http_address='无法读取'
-        socks_address='无法读取'
-        return 0
-        ;;
-    esac
-    if port=$(_status_proxy_port "$http_port" "$mixed_port"); then
-        http_address="http://${auth_prefix}${host}:${port}"
-    fi
-    if port=$(_status_proxy_port "$socks_port" "$mixed_port"); then
-        socks_address="socks5h://${auth_prefix}${host}:${port}"
-    fi
-}
 
-_status_local_host() {
-    local host=$1
-    case $host in
-    '' | '*' | 0.0.0.0) host=127.0.0.1 ;;
-    :: | '[::]') host='::1' ;;
-    esac
-    host=${host#\[}
-    host=${host%\]}
-    # 拒绝控制字符及 URL 中的凭据、路径，避免破坏终端布局。
-    case $host in '' | *[!a-zA-Z0-9.:%_-]*) return 1 ;; esac
-    case $host in *:*) host="[${host//%/%25}]" ;; esac
-    printf '%s\n' "$host"
-}
 
-_status_proxy_port() {
-    local port=${1:-0}
-    [ "$port" != 0 ] || port=${2:-0}
-    [[ $port =~ ^[0-9]+$ ]] && [ "${#port}" -le 5 ] || return 1
-    ((10#$port > 0 && 10#$port <= 65535)) || return 1
-    printf '%d\n' "$((10#$port))"
-}
-
-_status_urlencode() {
-    local LC_ALL=C value=$1 encoded='' character code index
-    for ((index = 0; index < ${#value}; index++)); do
-        character=${value:index:1}
-        case $character in
-        [a-zA-Z0-9._~-]) encoded+=$character ;;
-        *)
-            printf -v code '%%%02X' "'$character"
-            encoded+=$code
-            ;;
-        esac
-    done
-    printf '%s' "$encoded"
-}
 
 _status_render() {
     local state_label=$1 state_color=$2 subscription_label=$3 terminal_label=$4 http_address=$5 socks_address=$6
@@ -262,19 +156,14 @@ _status_render() {
     fi
     if [ -n "$verbose_pid" ]; then
         local log_location=${service_log_path:-无法读取}
-        if declare -F service_log_location >/dev/null 2>&1; then
-            log_location=$(service_log_location) || log_location='无法读取'
-        else
-            case ${service_manager:-} in
-            systemd) log_location="journalctl -u ${CLASHCTL_KERNEL:-mihomo}" ;;
-            systemd-user) log_location="journalctl --user -u ${CLASHCTL_KERNEL:-mihomo}" ;;
-            esac
-        fi
+        log_location=$(service_log_location) || log_location='无法读取'
         labels+=('' 'PID' '主配置' '运行配置' '日志')
         values+=('' "$verbose_pid" "$CLASH_CONFIG_BASE" "$CLASH_CONFIG_RUNTIME" "$log_location")
     fi
     local index label value columns=${COLUMNS:-} size styled=0 color utf8=0
     case ${LC_ALL:-${LC_CTYPE:-${LANG:-}}} in *UTF-8* | *UTF8* | *utf-8* | *utf8*) utf8=1 ;; esac
+    # en_IN 等 locale 名称可能不带 UTF-8 后缀。
+    [ "$utf8" -eq 1 ] || [ "$(locale charmap 2>/dev/null)" != UTF-8 ] || utf8=1
     if [ -t 1 ] && [ "${TERM:-dumb}" != dumb ] && [ "$utf8" -eq 1 ]; then
         case $columns in
         '' | *[!0-9]*)

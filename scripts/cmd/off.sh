@@ -18,14 +18,7 @@ clashoff() {
 }
 
 unset_system_proxy() {
-    unset http_proxy
-    unset https_proxy
-    unset HTTP_PROXY
-    unset HTTPS_PROXY
-    unset all_proxy
-    unset ALL_PROXY
-    unset no_proxy
-    unset NO_PROXY
+    unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY
 }
 
 off_help() {

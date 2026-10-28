@@ -10,10 +10,9 @@ for shell in bash zsh fish; do command -v "$shell" >/dev/null || fail "$shell is
 cat >"$WORK_DIR/services.sh" <<'STUB'
 service_is_active() { [ -f "$CLASHCTL_HOME/running" ]; }
 _require_base_config() { [ -f "$CLASHCTL_HOME/base-ready" ]; }
-_merge_config() { printf 'merge\n' >>"$CLASHCTL_HOME/calls"; }
+_merge_config() { _require_base_config || return 1; printf 'merge\n' >>"$CLASHCTL_HOME/calls"; }
 _detect_proxy_port() { :; }
 _detect_ext_addr() { :; }
-_get_bind_addr() { printf 127.0.0.1; }
 service_start() {
     [ ! -f "$CLASHCTL_HOME/fail-start" ] || return 1
     printf 'start\n' >>"$CLASHCTL_HOME/calls"
@@ -299,7 +298,7 @@ for shell in bash zsh fish; do
     printf '1\n' >"$home_dir/.clashctl-format"
     cp "$WORK_DIR/services.sh" "$home_dir/scripts/lib/zz-test.sh"
     printf 'CLASHCTL_KERNEL=mihomo\n' >"$home_dir/.env"
-    printf '#!/bin/sh\nprintf "7890|||"\n' >"$home_dir/bin/yq"
+    printf '#!/bin/sh\nprintf "7890\\t0\\t0\\t*\\tfalse\\t\\n"\n' >"$home_dir/bin/yq"
     printf '#!/bin/sh\nexit 0\n' >"$home_dir/bin/mihomo"
     chmod +x "$home_dir/bin/yq" "$home_dir/bin/mihomo"
     touch "$home_dir/base-ready"
@@ -311,5 +310,33 @@ for shell in bash zsh fish; do
     esac
     CLASHCTL_HOME="$home_dir" XDG_CACHE_HOME="$home_dir/cache" "$shell" "${shell_args[@]}" "$probe" \
         >"$WORK_DIR/output" 2>&1 || { cat "$WORK_DIR/output"; fail "$shell proxy lifecycle failed"; }
+done
+
+# on 留在当前 Shell；共用地址生成须同时适用于 Bash 和 Zsh 的参数展开。
+real_yq=$(command -v yq) || fail 'mikefarah yq v4 is required'
+for address_case in wildcard scoped; do
+    bind_addr='::' expected_host='[::1]'
+    if [ "$address_case" = scoped ]; then
+        bind_addr='fe80::1%eth0' expected_host='[fe80::1%25eth0]'
+    fi
+    cat >"$WORK_DIR/runtime.yaml" <<EOF
+mixed-port: 7890
+allow-lan: true
+bind-address: "$bind_addr"
+authentication: ["user 空格:p@ss/word"]
+EOF
+    auth='user%20%E7%A9%BA%E6%A0%BC:p%40ss%2Fword'
+    expected="http://$auth@$expected_host:7890"$'\n'"socks5h://$auth@$expected_host:7890"
+    for shell in bash zsh; do
+        actual=$(CLASHCTL_HOME="$WORK_DIR/addresses" "$shell" -c '
+            . "$1/scripts/lib/common.sh"
+            . "$1/scripts/lib/config.sh"
+            . "$1/scripts/cmd/on.sh"
+            CLASH_CONFIG_RUNTIME=$2 BIN_YQ=$3
+            set_system_proxy || exit 1
+            printf "%s\n%s\n" "$http_proxy" "$all_proxy"
+        ' address-test "$REPO_DIR" "$WORK_DIR/runtime.yaml" "$real_yq") || fail "$shell $address_case proxy addresses failed"
+        [ "$actual" = "$expected" ] || fail "$shell $address_case proxy addresses: $actual"
+    done
 done
 printf 'proxy-lifecycle: ok\n'

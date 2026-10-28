@@ -156,7 +156,8 @@ detect_service_manager() {
     service_manager=$RECOVERY_MANAGER
     service_log_path="$CLASHCTL_HOME/data/mihomo.log"
 }
-_service_uses_privileged_log() { [ "${RECOVERY_HELPER:-0}" = 1 ]; }
+_service_privileged_marker_exists() { [ "${RECOVERY_HELPER:-0}" = 1 ]; }
+_is_tun_enabled() { return 1; }
 journalctl() { printf '%s\n' "$*"; }
 SH
 for revision in 67ce07f a33e3c3; do

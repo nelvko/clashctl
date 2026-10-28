@@ -51,17 +51,5 @@ clashctl() {
         return 1
     }
 
-    # on/off 需要修改当前 Shell 的代理变量，update 需要把新版本重新载入当前
-    # Shell，help/version 为零依赖纯文本；其余命令统一在 Bash 子进程中执行。
-    case $sub_cmd in
-    on | off | update | help | version) ;;
-    *)
-        if ! _clashctl_in_bash; then
-            _clashctl_run_in_bash "$target" "$@"
-            return
-        fi
-        ;;
-    esac
-
     "$target" "$@"
 }

@@ -1,20 +1,60 @@
 #!/usr/bin/env bash
 
-_get_bind_addr() {
-  local allow_lan bind_addr
-  IFS='|' read -r bind_addr allow_lan < <(
-    "$BIN_YQ" '[.bind-address // "*", .allow-lan // false] | join("|")' "$CLASH_CONFIG_RUNTIME"
-  )
-
+# 读取运行配置，写入调用方的 http_address/socks_address；不修改配置。
+_proxy_addresses() {
+  http_address='' socks_address=''
+  local values mixed_port http_port socks_port bind_addr allow_lan host port auth_base64 auth='' auth_prefix=''
+  values=$("$BIN_YQ" -er 'select(tag == "!!map") |
+    [.mixed-port // 0, .port // 0, .socks-port // 0,
+     .bind-address // "*", .allow-lan // false,
+     (.authentication[0] // "" | @base64)] | @tsv' "$CLASH_CONFIG_RUNTIME" 2>/dev/null) || return 1
+  # 非空白分隔符保留空字段；认证字段用 base64 避免换行、制表符干扰拆分。
+  values=${values//$'\t'/$'\x1f'}
+  IFS=$'\x1f' read -r mixed_port http_port socks_port bind_addr allow_lan auth_base64 <<<"$values"
+  if [ -n "$auth_base64" ]; then
+    auth=$(printf '%s' "$auth_base64" | base64 --decode 2>/dev/null && printf '.') || return 1
+    auth=${auth%.}
+    case $auth in
+    '') ;;
+    *:*) auth_prefix="$(_urlencode "${auth%%:*}"):$(_urlencode "${auth#*:}")@" ;;
+    *) auth_prefix="$(_urlencode "$auth")@" ;;
+    esac
+  fi
   case $allow_lan in
-  true)
-    [ "$bind_addr" = "*" ] && bind_addr=$(_get_local_ip)
-    ;;
-  false)
-    bind_addr=127.0.0.1
-    ;;
+  false) host=127.0.0.1 ;;
+  true) host=$(_connect_host "$bind_addr") || return 1 ;;
+  *) return 1 ;;
   esac
-  printf '%s\n' "$bind_addr"
+  if port=$(_connect_port "$http_port" "$mixed_port"); then
+    http_address="http://${auth_prefix}${host}:${port}"
+  fi
+  if port=$(_connect_port "$socks_port" "$mixed_port"); then
+    socks_address="socks5h://${auth_prefix}${host}:${port}"
+  fi
+  return 0
+}
+
+# 通配监听地址转为本机回环，IPv6 地址补齐方括号及作用域转义。
+_connect_host() {
+  local host=$1
+  case $host in
+  '' | '*' | 0.0.0.0) host=127.0.0.1 ;;
+  :: | '[::]') host='::1' ;;
+  esac
+  host=${host#\[}
+  host=${host%\]}
+  # 拒绝控制字符及 URL 中的凭据、路径，避免破坏终端布局。
+  case $host in '' | *[!a-zA-Z0-9.:%_-]*) return 1 ;; esac
+  case $host in *:*) host="[${host//\%/%25}]" ;; esac
+  printf '%s\n' "$host"
+}
+
+_connect_port() {
+  local port=${1:-0}
+  [ "$port" != 0 ] || port=${2:-0}
+  [[ $port =~ ^[0-9]+$ ]] && [ "${#port}" -le 5 ] || return 1
+  ((10#$port > 0 && 10#$port <= 65535)) || return 1
+  printf '%d\n' "$((10#$port))"
 }
 
 _detect_proxy_port() {
@@ -39,13 +79,10 @@ _detect_proxy_port() {
   for entry in "${entries[@]}"; do
     yaml_key=${entry%%:*}
     port=${entry#*:}
-
-    [ -n "$port" ] && _is_port_used "$port" && [ "$service_active" != "true" ] && {
-      new_port=$(_get_random_port) || return
-      count=$((count + 1))
-      _ui_warn "端口冲突：[$yaml_key] $port，随机分配 $new_port"
-      "$BIN_YQ" -i ".${yaml_key} = $new_port" "$CLASH_CONFIG_MIXIN"
-    }
+    [ -n "$port" ] && [ "$service_active" != true ] || continue
+    new_port=$(_replacement_port "$yaml_key" "$port") || { [ $? -eq 1 ] && continue; return 1; }
+    count=$((count + 1))
+    "$BIN_YQ" -i ".${yaml_key} = $new_port" "$CLASH_CONFIG_MIXIN"
   done
 
   if [ "$count" -gt 0 ] && ! _merge_config; then
@@ -56,28 +93,20 @@ _detect_proxy_port() {
 }
 
 _detect_ext_addr() {
-  local ext_addr
+  local ext_addr new_port
   ext_addr=$("$BIN_YQ" '.external-controller // ""' "$CLASH_CONFIG_RUNTIME")
 
   local ext_ip=${ext_addr%%:*}
-  local ext_port=${ext_addr##*:}
-
   EXT_IP=$ext_ip
-  EXT_PORT=$ext_port
+  EXT_PORT=${ext_addr##*:}
   [ "$ext_ip" = '0.0.0.0' ] && EXT_IP=$(_get_local_ip)
 
-  local service_active=false
-  service_is_active >&/dev/null && service_active=true
-
-  _is_port_used "$EXT_PORT" && [ "$service_active" != "true" ] && {
-    local new_port
-    new_port=$(_get_random_port) || return
-    _ui_warn "端口冲突：[external-controller] ${EXT_PORT}，随机分配 $new_port"
-    EXT_PORT=$new_port
-    EXT_ADDR="$ext_ip:$new_port" "$BIN_YQ" -i '.external-controller = env(EXT_ADDR)' "$CLASH_CONFIG_MIXIN"
-    _merge_config
-  }
-  return 0
+  # 服务运行时端口由它自己占用，不需要换。
+  service_is_active >&/dev/null && return 0
+  new_port=$(_replacement_port external-controller "$EXT_PORT") || { [ $? -eq 1 ] && return 0; return 1; }
+  EXT_PORT=$new_port
+  EXT_ADDR="$ext_ip:$new_port" "$BIN_YQ" -i '.external-controller = env(EXT_ADDR)' "$CLASH_CONFIG_MIXIN"
+  _merge_config
 }
 
 _get_secret() {

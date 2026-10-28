@@ -73,6 +73,12 @@ test_exact_record_and_atomic_binary_replacement() {
         fail 'could not create the exact nohup process record'
     _service_process_record_load "$service_pid_path" || fail 'valid process record was rejected'
     [ "$(stat -c %a -- "$service_pid_path")" = 600 ] || fail 'nohup process record mode is not 0600'
+    (
+        sed 's/^starttime=.*/pid=4242/' "$service_pid_path" >"$WORK_DIR/duplicate-key.record"
+        if _service_process_record_load "$WORK_DIR/duplicate-key.record"; then
+            fail 'duplicate process identity field was accepted'
+        fi
+    )
     expected_argv=$(_service_process_values_argv_hex "$BIN_KERNEL" 30)
     [ "$_SERVICE_RECORD_PID" = "$owned_pid" ] || fail 'record did not retain the exact PID'
     [ "$_SERVICE_RECORD_ARGV" = "$expected_argv" ] || fail 'record did not retain the complete argv'
@@ -110,7 +116,6 @@ test_pid_identity_is_rechecked_before_term() {
             _SERVICE_RECORD_ARGV=00
             _SERVICE_RECORD_EXE_ID=1:1
         }
-        _service_process_record_has_identity() { return 0; }
         local_matches=0
         _service_process_identity_matches() {
             local_matches=$((local_matches + 1))
@@ -135,7 +140,6 @@ test_pid_identity_is_rechecked_before_kill() {
             _SERVICE_RECORD_ARGV=00
             _SERVICE_RECORD_EXE_ID=1:1
         }
-        _service_process_record_has_identity() { return 0; }
         identity_checks=0
         _service_process_identity_matches() {
             identity_checks=$((identity_checks + 1))
@@ -218,5 +222,16 @@ test_pid_identity_is_rechecked_before_term
 test_pid_identity_is_rechecked_before_kill
 test_privileged_record_is_root_owned_and_authoritative
 test_stale_process_lock_is_recovered
+
+# 启停失败也必须释放记录锁，使后续操作能够立即重试。
+(
+    record="$WORK_DIR/failing-record"
+    fail_operation() { return 7; }
+    rc=0
+    _service_process_with_lock "$record" fail_operation || rc=$?
+    [ "$rc" -eq 7 ] || fail 'record operation lost its failure status'
+    [ ! -e "${record}.lock" ] || fail 'failed record operation retained the lock'
+    _service_process_with_lock "$record" true || fail 'failed record operation could not be retried'
+)
 
 printf 'nohup-service: ok\n'

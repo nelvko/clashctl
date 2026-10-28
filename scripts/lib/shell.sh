@@ -2,9 +2,8 @@
 
 # 解释器归一化：非 Bash（zsh 等）无法安全执行 lib/ 与 cmd/ 中的实现
 # （read -r -a、${!arr[@]}、${s:i:1}、$BASHPID、$BASH_SOURCE 均为 Bash 语法）。
-# 调用点有两处：
-#   1) scripts/cmd/clashctl.sh 的分发入口，覆盖 clashctl <sub>
-#   2) 各 clash* 入口函数，覆盖直接调用（clashnode / clashsub / clashui ...）
+# 由各 clash* 入口函数调用，clashctl <sub> 与直接调用走同一条路径。
+# on/off/help/version 留在当前 Shell；update 在 Bash 中更新后再重载命令。
 _clashctl_in_bash() {
     [ -n "${BASH_VERSION:-}" ]
 }

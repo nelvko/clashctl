@@ -79,4 +79,80 @@ CURL_RC=0
 HTTP_CODE=400 switch_result 1 '或该组不可手动切换'
 HTTP_CODE=404 switch_result 1 '不存在'
 HTTP_CODE=401 switch_result 1 '控制器返回 401'
+
+# 共用组选速路径：旧内核 404/405 回退，组超时或认证失败不再重复逐节点请求。
+service_is_active() { return 0; }
+DELAY_GROUP='策略 A 🚀/?#'
+DELAY_NODE='节点 A/?'
+DELAY_URL='https://fixture.invalid/ping?token=a&b=中文#frag'
+requests="$WORK_DIR/delay-requests"
+curl() {
+    local arg target=''
+    for arg; do
+        [[ $arg = http://fixture.invalid:* ]] && target=$arg
+    done
+    printf '%s\n' "$target" >>"$requests"
+    case $target in
+    */group/*/delay?*)
+        if [ "$HTTP_CODE" = 200 ]; then
+            printf '{"节点 A/?":31}'
+        else
+            printf '{"message":"fixture failure"}'
+        fi
+        printf '\n%s' "$HTTP_CODE"
+        ;;
+    */proxies/*/delay?*) printf '{"delay":17}' ;;
+    */proxies/*) printf '{"all":["节点 A/?","DIRECT"]}' ;;
+    *) fail "unexpected controller route: $target" ;;
+    esac
+}
+for HTTP_CODE in 200 404 405 504 401; do
+    : >"$requests"
+    rc=0
+    clashnode delay -g --url "$DELAY_URL" --timeout=2500 "$DELAY_GROUP" >"$output" 2>&1 || rc=$?
+    case $HTTP_CODE in
+    404 | 405)
+        assert_eq 4 "$(wc -l <"$requests")" 'old API fallback request count'
+        assert_contains "$output" '17ms' 'old API fallback delay'
+        ;;
+    401)
+        assert_eq 1 "$rc" 'group authentication failure'
+        assert_eq 2 "$(wc -l <"$requests")" 'authentication failure must not trigger fallback'
+        assert_contains "$output" '控制器返回 401' 'group authentication diagnosis'
+        assert_not_contains "$output" '超时' 'authentication failure reported as timeout'
+        ;;
+    *)
+        assert_eq 2 "$(wc -l <"$requests")" 'group API must not repeat delay requests'
+        assert_contains "$output" '超时' 'missing or failed group result'
+        [ "$HTTP_CODE" != 200 ] || assert_contains "$output" '31ms' 'group API delay'
+        ;;
+    esac
+    python3 - "$requests" "$DELAY_GROUP" "$DELAY_URL" <<'PYTHON'
+from pathlib import Path
+import sys
+from urllib.parse import parse_qs, quote, urlparse
+path, group, target = sys.argv[1:]
+urls = Path(path).read_text().splitlines()
+assert urls[0].endswith('/proxies/' + quote(group, safe='')), urls
+request = urlparse(urls[1])
+assert request.path == '/group/' + quote(group, safe='') + '/delay', urls
+for url in urls[1:]:
+    assert parse_qs(urlparse(url).query) == {'timeout': ['2500'], 'url': [target]}, urls
+PYTHON
+    checks=$((checks + 1))
+done
+
+# 共用选项解析仍区分 use/delay 的参数，并保留校验与 -- 的原有语义。
+for arguments in 'use -g' 'delay -d' 'delay -g -p'; do
+    rc=0
+    read -r -a options <<<"$arguments"
+    clashnode "${options[@]}" >"$output" 2>&1 || rc=$?
+    assert_eq 1 "$rc" 'invalid node options'
+    checks=$((checks + 1))
+done
+assert_contains "$output" '不能同时使用' 'conflicting delay modes'
+_node_apply() { printf '%s\t%s\n' "$1" "$2" >"$WORK_DIR/applied"; }
+clashnode use -- --group -member
+assert_eq $'--group\t-member' "$(cat "$WORK_DIR/applied")" 'literal names following --'
+checks=$((checks + 1))
 printf 'node-switch: %s checks passed\n' "$checks"

@@ -30,12 +30,11 @@ clashtun() {
 }
 
 tunoff() {
+    detect_service_manager
     if ! tunstatus >/dev/null; then
         # 用户单元会跳过 TUN 配置；helper 已退出时也必须允许清除配置。
-        detect_service_manager
         [ "${service_manager:-}" = systemd-user ] && _is_tun_enabled || return 0
     fi
-    detect_service_manager
     if [ "${service_manager:-}" = systemd-user ]; then
         # 用户后端会同时停止 unit 与仍存在的 helper；没有 helper 时无需 sudo。
         service_stop >/dev/null || return 1

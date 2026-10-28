@@ -11,6 +11,8 @@ CLASH_CONFIG_DEBUG_RAW="$WORK_DIR/last-failed.raw"
 BIN_SUBCONVERTER_LOG="$WORK_DIR/converter.log"
 mkdir -p "$CLASH_RESOURCES_DIR"
 
+# shellcheck source=../scripts/lib/convert.sh
+. "$REPO_DIR/scripts/lib/convert.sh"
 # shellcheck source=../scripts/cmd/sub.sh
 . "$REPO_DIR/scripts/cmd/sub.sh"
 
