@@ -5,6 +5,26 @@ _tui_tr() {
     local message=$1
     if [ "${_TUI_LANGUAGE:-en}" = zh-CN ]; then
         case $message in
+        'Resize terminal to at least 40 x 15.') message='请将终端调整到至少 40 列 × 15 行。' ;;
+        'q: exit') message='q：退出' ;;
+        'Home/End: first/last') message='Home/End：首项/末项' ;;
+        'o Enable  f Disable  x Stop  n Nodes  s Subscriptions  a Add') message='o 启用  f 关闭  x 停止内核  n 节点  s 订阅  a 添加' ;;
+        'Ready') message='就绪' ;;
+        'Working...') message='正在处理…' ;;
+        'Done. Proxy changes apply to your shell when you exit.') message='已完成。终端代理设置会在退出后同步到当前 Shell。' ;;
+        'Cannot read nodes. Check the controller.') message='无法读取节点，请检查控制接口。' ;;
+        'No selectable policy groups.') message='没有可手动选择的策略组。' ;;
+        '/: search') message='/: 搜索' ;;
+        'Search') message='搜索' ;;
+        'No matches. Showing all items.') message='无匹配结果，已显示全部。' ;;
+        'Start, stop, restart and login startup') message='管理内核运行与登录自启' ;;
+        'Add links and manage subscription updates') message='添加链接、切换与更新订阅' ;;
+        'Choose routes and compare latency') message='选择策略组节点、比较延迟' ;;
+        'HTTP / SOCKS listeners and addresses') message='管理监听端口与代理地址' ;;
+        'Routing mode, LAN access and TUN') message='规则模式、局域网访问与 TUN' ;;
+        'Web dashboard and controller access') message='管理 Web 面板与控制接口' ;;
+        'Inspect logs, status and configuration') message='查看日志、运行状态与配置' ;;
+        'Control the proxy for your current shell') message='控制当前 Shell 的代理环境' ;;
         'Overview') message='总览' ;;
         'Kernel & startup') message='内核与自启' ;;
         'Subscriptions') message='订阅管理' ;;

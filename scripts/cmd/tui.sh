@@ -10,6 +10,7 @@ clashtui() {
 打开终端可视化管理：代理开关、内核与自启、订阅和节点、端口与配置。
 Language / 语言：可选择 English、简体中文；选择后立即生效并自动保存。
 方向键或 j/k 移动，Enter 或数字键选择，q/Esc 返回；输入留空取消。
+首页快捷键：o 启用代理，f 关闭终端代理，x 停止内核，n 选节点，s 切换订阅，a 添加订阅。
 代理开关在退出 TUI 后同步到当前终端。
 HELP
         return 0 ;;
@@ -45,11 +46,13 @@ _tui_session() (
 _tui_run() {
     local _TUI_STTY _TUI_CHOICE='' _TUI_VALUE='' _TUI_COLOR=false _TUI_LANGUAGE=en
     local -a _TUI_FRAME_LINES=()
+    local -A _TUI_SELECTIONS=()
+    local _TUI_NOTICE='' _TUI_PAGE='' _TUI_COLUMNS=80 _TUI_ACTION_OUTPUT=''
     local _TUI_FRAME_WIDTH=0 _TUI_FRAME_HEIGHT=0 _TUI_SCREEN_DIRTY=false
     _tui_load_language
     _TUI_STTY=$(stty -g) || return 1
     _ui_color_enabled 1 && _TUI_COLOR=true
-    trap 'trap "" HUP INT TERM; stty "$_TUI_STTY" 2>/dev/null; printf "\033[?25h\033[?1049l"' EXIT
+    trap 'trap "" HUP INT TERM; stty "$_TUI_STTY" 2>/dev/null; [ -z "$_TUI_ACTION_OUTPUT" ] || command rm -f -- "$_TUI_ACTION_OUTPUT"; printf "\033[?25h\033[?1049l"' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
     trap 'exit 129' HUP
@@ -66,6 +69,13 @@ _tui_run() {
         6) _tui_diagnostics ;;
         7) _tui_terminal_proxy ;;
         8) _tui_language_menu ;;
+        on) _tui_quick _tui_proxy on ;;
+        off) _tui_quick _tui_proxy off ;;
+        stop) _tui_confirm 'Stop the kernel for all connected clients?' && _tui_quick _tui_proxy stop ;;
+        node) _tui_pick_node ;;
+        subscription) _tui_pick_subscription ;;
+        add) _tui_input 'Subscription URL' && _tui_quick clashsub add --use "$_TUI_VALUE" ;;
+
         esac
     done
     return 0
@@ -73,6 +83,61 @@ _tui_run() {
 
 # Do not render subscription names, URIs or filenames as terminal escapes.
 _tui_text() { LC_ALL=C printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177'; }
+
+# Fit untrusted labels without wrapping; combining marks take no extra cells.
+_tui_line() {
+    local text char code cells=0 size=1 i limit=${2:-$((${_TUI_COLUMNS:-80} - 2))}
+    text=$(_tui_text "$1")
+    for ((i=0; i<${#text}; i++)); do
+        char=${text:i:1}
+        printf -v code '%d' "'$char"
+        size=1
+        if ((code >= 0x300 && code <= 0x36f || code >= 0xfe00 && code <= 0xfe0f || code == 0x200d)); then size=0
+        elif ((code >= 0x1100 && code <= 0x115f || code >= 0x2e80 && code <= 0xa4cf || code >= 0xac00 && code <= 0xd7a3 || code >= 0xf900 && code <= 0xfaff || code >= 0xfe10 && code <= 0xfe6f || code >= 0xff01 && code <= 0xff60 || code >= 0x1f000)); then size=2; fi
+        if ((cells + size > limit)); then break; fi
+        printf '%s' "$char"
+        cells=$((cells + size))
+    done
+    if [ "$#" -gt 2 ]; then
+        printf '%*s' "$((limit - cells))" ''
+        [ "$_TUI_COLOR" != true ] || printf '\033[2m'
+        local _TUI_COLUMNS=$((${_TUI_COLUMNS:-80} - limit))
+        _tui_line "  $3"
+        [ "$_TUI_COLOR" != true ] || printf '\033[0m'
+    else
+        printf '\n'
+    fi
+}
+
+_tui_description() {
+    case $1 in
+    'Kernel & startup') _tui_tr 'Start, stop, restart and login startup' ;;
+    'Subscriptions') _tui_tr 'Add links and manage subscription updates' ;;
+    'Nodes & latency') _tui_tr 'Choose routes and compare latency' ;;
+    'Proxy ports') _tui_tr 'HTTP / SOCKS listeners and addresses' ;;
+    'Proxy settings') _tui_tr 'Routing mode, LAN access and TUN' ;;
+    'Dashboard & secret') _tui_tr 'Web dashboard and controller access' ;;
+    'Logs & diagnostics') _tui_tr 'Inspect logs, status and configuration' ;;
+    'Terminal proxy') _tui_tr 'Control the proxy for your current shell' ;;
+    'Language / 语言') printf 'English / 简体中文' ;;
+    esac
+}
+
+_tui_menu_row() {
+    if [ "${_TUI_PAGE:-}" = Overview ] && [ "${_TUI_COLUMNS:-80}" -ge 90 ]; then
+        _tui_line "$1" 34 "$(_tui_description "$2")"
+    else
+        _tui_line "$1"
+    fi
+}
+
+_tui_rule() {
+    local rule
+    printf -v rule '%*s' "$((${_TUI_COLUMNS:-80} - 4))" ''
+    [ "$_TUI_COLOR" != true ] || printf '\033[2m'
+    printf '  %s\n' "${rule// /─}"
+    [ "$_TUI_COLOR" != true ] || printf '\033[0m'
+}
 
 _tui_header() {
     local state mode='unknown' port='unknown' startup='unavailable' subscription http_address socks_address terminal_proxy=disabled
@@ -93,18 +158,19 @@ _tui_header() {
         subscription=$("$BIN_YQ" -r '.use // ""' "$CLASH_PROFILES_META" 2>/dev/null) || subscription=$(_tui_tr 'Cannot read subscription')
     else subscription=''; fi
     [ -n "$subscription" ] || subscription=$(_tui_tr 'No active subscription')
-    if [ "$_TUI_COLOR" = true ]; then printf '\033[1;36m'; fi
-    printf '  clashctl daemon  /  %s\n' "$(_tui_tr "$1")"
+    [ "$_TUI_COLOR" != true ] || printf '\033[1;36m'
+    _tui_line "  CLASHCTL   /   $(_tui_tr "$1")"
     [ "$_TUI_COLOR" != true ] || printf '\033[0m'
-    _tui_say '  Kernel: %s    Mode: %s    Mixed port: %s' \
-        "$(_tui_text "$(_tui_tr "$state")")" "$(_tui_text "$(_tui_tr "$mode")")" "$(_tui_text "$port")"
-    _tui_say '  Service: %s    Login startup: %s    Terminal proxy: %s' \
-        "$(_tui_text "$service_manager")" "$(_tui_text "$(_tui_tr "$startup")")" "$(_tui_tr "$terminal_proxy")"
-    _tui_say '  Subscription: %s' "$(_tui_text "$subscription")"
+    _tui_rule
+    [ "$_TUI_COLOR" != true ] || { if [ "$state" = running ]; then printf '\033[32m'; else printf '\033[33m'; fi; }
+    _tui_line "  $(_tui_tr "$state")  /  $(_tui_tr "$mode")  /  :$port"
+    [ "$_TUI_COLOR" != true ] || printf '\033[0m'
+    _tui_line "$(_tui_say '  Service: %s    Login startup: %s    Terminal proxy: %s' "$service_manager" "$(_tui_tr "$startup")" "$(_tui_tr "$terminal_proxy")")"
+    _tui_line "$(_tui_say '  Subscription: %s' "$subscription")"
     if _proxy_addresses "$CLASH_CONFIG_RUNTIME" false 2>/dev/null; then
-        _tui_say '  HTTP: %s    SOCKS: %s' "${http_address:-$(_tui_tr Disabled)}" "${socks_address:-$(_tui_tr Disabled)}"
+        _tui_line "  HTTP ${http_address:-—}  /  SOCKS ${socks_address:-—}"
     fi
-    printf '\n'
+
 }
 
 # Render a complete frame in memory; only changed rows reach the terminal.
@@ -145,40 +211,60 @@ _tui_invalidate_frame() {
 }
 
 _tui_build_frame() {
-    local header=$1 selected=$2 rows=$3 i
+    local header=$1 selected=$2 rows=$3 i start=0 visible label
     shift 3
     local -a items=("$@")
-    printf '%s\n\n' "$header"
-    if [ "$rows" -lt "$((${#items[@]} + 12))" ]; then
-        _tui_say '  Enlarge the terminal to at least %s rows.' "$((${#items[@]} + 12))"
-    else
-        for ((i=0; i<${#items[@]}; i++)); do
-            if [ "$i" -eq "$selected" ]; then
-                [ "$_TUI_COLOR" != true ] || printf '\033[1;30;46m'
-                printf '  > %d  %s' "$((i + 1))" "$(_tui_tr "${items[i]}")"
-                [ "$_TUI_COLOR" != true ] || printf '\033[0m'
-                printf '\n'
-            else
-                printf '    %d  %s\n' "$((i + 1))" "$(_tui_tr "${items[i]}")"
-            fi
-        done
+    if [ "$rows" -lt 15 ] || [ "${_TUI_COLUMNS:-80}" -lt 40 ]; then
+        _tui_line '  CLASHCTL'
+        _tui_line "$(_tui_tr 'Resize terminal to at least 40 x 15.')"
+        _tui_line "$(_tui_tr 'q: exit')"
+        return
     fi
-    printf '\n'
-    _tui_say '  Up/Down or j/k: move   Enter: select   q/Esc: back'
-    _tui_say '  Number keys select immediately.'
+    printf '%s\n\n' "$header"
+    visible=$((rows - 13))
+    [ "$visible" -le "${#items[@]}" ] || visible=${#items[@]}
+    [ "$selected" -lt "$visible" ] || start=$((selected - visible + 1))
+    for ((i=start; i<start+visible; i++)); do
+        label=${items[i]}
+        [ "${_TUI_RAW_ITEMS:-false}" = true ] || label=$(_tui_tr "$label")
+        if [ "$i" -eq "$selected" ]; then
+            [ "$_TUI_COLOR" != true ] || printf '\033[1;36m'
+            _tui_menu_row "  > $((i + 1))  $label" "${items[i]}"
+            [ "$_TUI_COLOR" != true ] || printf '\033[0m'
+        else
+            _tui_menu_row "    $((i + 1))  $label" "${items[i]}"
+        fi
+    done
+    _tui_rule
+    if [ "${_TUI_PAGE:-}" = Overview ]; then
+        _tui_line "  $(_tui_tr 'o Enable  f Disable  x Stop  n Nodes  s Subscriptions  a Add')"
+    else
+        _tui_line "  $((selected + 1)) / ${#items[@]}   $(_tui_tr 'Home/End: first/last') $([ "${_TUI_SEARCHABLE:-false}" != true ] || _tui_tr '/: search')"
+    fi
+    _tui_line "$(_tui_tr '  Up/Down or j/k: move   Enter: select   q/Esc: back')"
+    _tui_line "$(_tui_tr '  Number keys select immediately.')"
+    [ "$_TUI_COLOR" != true ] || printf '\033[2m'
+    _tui_line "  ${_TUI_NOTICE:-$(_tui_tr 'Ready')}"
+    [ "$_TUI_COLOR" != true ] || printf '\033[0m'
 }
 
 _tui_menu() {
-    local title=$1 selected=0 key tail rows columns rc header='' frame refresh=true
+    local title=$1 selected key tail rows columns rc header='' frame refresh=true previous_columns=0
+    local _TUI_PAGE=$1
     shift
     local -a items=("$@")
+    [ "${#items[@]}" -gt 0 ] || return 1
+    selected=${_TUI_SELECTIONS[$title]:-0}
+    [ "$selected" -lt "${#items[@]}" ] || selected=0
     printf '\033[?25l'
     while :; do
         rows=$(tput lines 2>/dev/null) || rows=24
         columns=$(tput cols 2>/dev/null) || columns=80
-        if [ "$refresh" = true ]; then
+        _TUI_COLUMNS=$columns
+        if [ "$refresh" = true ] || [ "$columns" != "$previous_columns" ]; then
             header=$(_tui_header "$title") || return 1
             refresh=false
+            previous_columns=$columns
         fi
         frame=$(_tui_build_frame "$header" "$selected" "$rows" "${items[@]}") || return 1
         _tui_render_frame "$frame" "$rows" "$columns"
@@ -191,18 +277,133 @@ _tui_menu() {
             tail=''
             if IFS= read -rsn1 -t 0.1 tail && [ "$tail" = '[' ]; then
                 IFS= read -rsn1 -t 0.1 tail || tail=''
-                case $tail in A) key=k ;; B) key=j ;; *) continue ;; esac
+                case $tail in A) key=k ;; B) key=j ;; H) key=g ;; F) key=G ;; D) return 1 ;; *) continue ;; esac
             else return 1; fi ;;
         esac
+        case $key in q | Q) return 1 ;; esac
+        # A clipped screen never accepts invisible actions.
+        if [ "$rows" -lt 15 ] || [ "$columns" -lt 40 ]; then continue; fi
+        if [ "$title" = Overview ]; then
+            case $key in
+            o) _TUI_CHOICE=on; return 0 ;;
+            f) _TUI_CHOICE=off; return 0 ;;
+            x) _TUI_CHOICE=stop; return 0 ;;
+            n) _TUI_CHOICE=node; return 0 ;;
+            s) _TUI_CHOICE=subscription; return 0 ;;
+            a) _TUI_CHOICE=add; return 0 ;;
+            esac
+        fi
+        if [ "$key" = / ] && [ "${_TUI_SEARCHABLE:-false}" = true ]; then
+            _TUI_CHOICE=search
+            return 0
+        fi
         case $key in
         k) selected=$(((selected + ${#items[@]} - 1) % ${#items[@]})) ;;
         j) selected=$(((selected + 1) % ${#items[@]})) ;;
-        '') _TUI_CHOICE=$selected; return 0 ;;
+        g) selected=0 ;;
+        G) selected=$((${#items[@]} - 1)) ;;
+        '') _TUI_CHOICE=$selected; _TUI_SELECTIONS[$title]=$selected; return 0 ;;
         [1-9])
-            if [ "$key" -le "${#items[@]}" ]; then _TUI_CHOICE=$((key - 1)); return 0; fi ;;
-        q | Q) return 1 ;;
+            if [ "$key" -le "${#items[@]}" ]; then
+                _TUI_CHOICE=$((key - 1)); _TUI_SELECTIONS[$title]=$_TUI_CHOICE; return 0
+            fi ;;
         esac
+        _TUI_SELECTIONS[$title]=$selected
     done
+}
+
+# Run in this UI shell so proxy environment changes are retained. Logs stay private.
+_tui_quick() {
+    local output rc=0
+    output=$(mktemp "${TMPDIR:-/tmp}/clashctl-tui-action.XXXXXX") || return 1
+    _TUI_ACTION_OUTPUT=$output
+    _tui_invalidate_frame
+    printf '\033[H\033[?25l'
+    _tui_line "$(_tui_tr 'Working...')"
+    "$@" >"$output" 2>&1 || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        _TUI_NOTICE=$(_tui_tr 'Done. Proxy changes apply to your shell when you exit.')
+    else
+        printf '\033[H\033[J'
+        cat -- "$output"
+        _tui_say 'Operation failed (exit %d). Review the output above.' "$rc"
+        _tui_pause
+    fi
+    command rm -f -- "$output"
+    _TUI_ACTION_OUTPUT=''
+    return "$rc"
+}
+
+# Filter labels while preserving the original index used for API calls.
+_tui_choose() {
+    local title=$1 query='' i _TUI_SEARCHABLE=true _TUI_RAW_ITEMS=true
+    shift
+    local -a original=("$@") filtered=() indices=()
+    [ "${#original[@]}" -gt 0 ] || return 1
+    while :; do
+        filtered=(); indices=()
+        for ((i=0; i<${#original[@]}; i++)); do
+            if [[ ${original[i],,} == *"${query,,}"* ]]; then
+                filtered+=("${original[i]}"); indices+=("$i")
+            fi
+        done
+        if [ "${#filtered[@]}" -eq 0 ]; then
+            _TUI_NOTICE=$(_tui_tr 'No matches. Showing all items.')
+            query=''
+            continue
+        fi
+        _tui_menu "$title" "${filtered[@]}" || return 1
+        if [ "$_TUI_CHOICE" = search ]; then
+            if _tui_input 'Search'; then query=$_TUI_VALUE; else query=''; fi
+            _TUI_SELECTIONS[$title]=0
+        else
+            _TUI_CHOICE=${indices[_TUI_CHOICE]}
+            return 0
+        fi
+    done
+}
+
+_tui_pick_subscription() {
+    local values current name _TUI_RAW_ITEMS=true
+    local -a names=() labels=()
+    values=$(_sub_names) || return 1
+    current=$(_sub_current)
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        names+=("$name")
+        if [ "$name" = "$current" ]; then labels+=("● $name"); else labels+=("  $name"); fi
+    done <<<"$values"
+    if [ "${#names[@]}" -eq 0 ]; then
+        _tui_input 'Subscription URL' && _tui_quick clashsub add --use "$_TUI_VALUE"
+        return
+    fi
+    if _tui_choose 'Switch subscription' "${labels[@]}"; then
+        _tui_quick clashsub use "${names[_TUI_CHOICE]}"
+    fi
+}
+
+_tui_pick_node() {
+    local data values group name current _TUI_RAW_ITEMS=true
+    local -a names=() labels=()
+    _tui_quick clashstart || return 1
+    data=$(_node_curl GET /proxies) || { _TUI_NOTICE=$(_tui_tr 'Cannot read nodes. Check the controller.'); return 1; }
+    values=$(printf '%s' "$data" | "$BIN_YQ" -p=json -r '.proxies | to_entries | .[] | select(.value.type == "Selector") | .key') || return 1
+    while IFS= read -r name; do [ -z "$name" ] || names+=("$name"); done <<<"$values"
+    [ "${#names[@]}" -gt 0 ] || { _TUI_NOTICE=$(_tui_tr 'No selectable policy groups.'); return 1; }
+    if [ "${#names[@]}" -eq 1 ]; then group=${names[0]}
+    elif _tui_choose 'List policy groups' "${names[@]}"; then group=${names[_TUI_CHOICE]}
+    else return; fi
+    values=$(printf '%s' "$data" | GROUP_NAME="$group" "$BIN_YQ" -p=json -r '.proxies[strenv(GROUP_NAME)].all[]') || return 1
+    current=$(printf '%s' "$data" | GROUP_NAME="$group" "$BIN_YQ" -p=json -r '.proxies[strenv(GROUP_NAME)].now // ""') || return 1
+    names=()
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        names+=("$name")
+        if [ "$name" = "$current" ]; then labels+=("● $name"); else labels+=("  $name"); fi
+    done <<<"$values"
+    if _tui_choose 'Switch node' "${labels[@]}"; then
+        _tui_quick clashnode use -- "$group" "${names[_TUI_CHOICE]}"
+    fi
 }
 
 _tui_pause() {
@@ -301,7 +502,7 @@ _tui_nodes() {
     while _tui_menu 'Nodes & latency' 'List policy groups' 'Switch node' 'Switch node with latency' 'Test group latency'; do
         case $_TUI_CHOICE in
         0) _tui_action clashnode list ;;
-        1) _tui_action clashnode use ;;
+        1) _tui_pick_node ;;
         2) _tui_action clashnode use --delay ;;
         3) _tui_action clashnode delay ;;
         esac
@@ -315,11 +516,11 @@ _tui_subscriptions() {
         case $_TUI_CHOICE in
         0) _tui_action clashsub list ;;
         1) _tui_input 'Subscription URL' && _tui_action clashsub add --use "$_TUI_VALUE" ;;
-        2) _tui_action clashsub use ;;
+        2) _tui_pick_subscription ;;
         3) _tui_action clashsub update --all ;;
         4) _tui_action clashsub del ;;
         5) _tui_action clashsub log ;;
-        6) _tui_action _tui_subscription_node ;;
+        6) _tui_pick_node ;;
         7) _tui_action _tui_subscription_node --delay ;;
         esac
     done

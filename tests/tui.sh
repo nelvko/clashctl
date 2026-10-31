@@ -46,6 +46,9 @@ tunstatus() { return 1; }
     (home / 'scripts/cmd/zz-fixture.sh').write_text('clashsub() {\n    printf \'sub:%s\\n\' "$*" >>"$CLASHCTL_HOME/actions"\n    echo \'Subscription operation complete (fixture).\'\n}\n')
     with (home / 'scripts/cmd/zz-fixture.sh').open('a') as fixture:
         fixture.write('clashnode() {\n    printf \'node:%s\\n\' "$*" >>"$CLASHCTL_HOME/actions"\n    echo \'Node selected (fixture).\'\n}\n')
+    with (home / 'scripts/cmd/zz-fixture.sh').open('a') as fixture:
+        fixture.write("\n_sub_names() { printf 'Alpha\\nBeta\\n'; }\n_sub_current() { echo Alpha; }\n")
+        fixture.write("_node_curl() { printf '%s' '{\"proxies\":{\"Group\":{\"type\":\"Selector\",\"now\":\"Tokyo\",\"all\":[\"Tokyo\",\"Hong Kong\"]}}}'; }\n")
     env = dict(os.environ, CLASHCTL_HOME=str(home), CLASHCTL_SRC=str(home),
                TERM='xterm-256color', NO_COLOR='1')
     config = {'mixed-port': 37700, 'allow-lan': False, 'mode': 'direct',
@@ -105,9 +108,35 @@ tunstatus() { return 1; }
     assert 'Header' not in result.stdout and '\x1b[2J' not in result.stdout
     assert '\x1b[2;1H' in result.stdout and '\x1b[3;1H' in result.stdout
 
+    # Compact viewport, wide characters, escape sanitization and original-index filtering.
+    result = run('_TUI_COLUMNS=40; _tui_line "' + '节点' * 30 + '"')
+    assert len(result.stdout.strip()) == 19, result.stdout
+    result = run('_TUI_COLUMNS=80; _tui_line $\'safe\\e[31mname\'')
+    assert '\x1b' not in result.stdout
+    result = run('_TUI_COLOR=false; _TUI_COLUMNS=40; _TUI_PAGE=Overview; '
+                 '_tui_build_frame $\'Title\\nRule\\nState\\nService\\nSub\\nAddress\' 8 15 '
+                 'one two three four five six seven eight nine')
+    assert '> 9  nine' in result.stdout and '    1  one' not in result.stdout
+    assert len(result.stdout.splitlines()) < 15
+    result = run('declare -A _TUI_SELECTIONS=(); calls=0; '
+                 '_tui_menu() { calls=$((calls+1)); if [ "$calls" = 1 ]; then _TUI_CHOICE=search; '
+                 'else [ "$2" = "Hong Kong" ] || return 1; _TUI_CHOICE=0; fi; }; '
+                 '_tui_input() { _TUI_VALUE=kong; }; '
+                 '_tui_choose Nodes Tokyo "Hong Kong" London; printf "INDEX:%s" "$_TUI_CHOICE"')
+    assert result.stdout == 'INDEX:1', result.stdout
+    result = run('_tui_quick() { "$@"; }; _tui_choose() { _TUI_CHOICE=1; }; '
+                 '_sub_names() { printf "Alpha\\nBeta space\\n"; }; _sub_current() { echo Alpha; }; '
+                 '_tui_pick_subscription')
+    assert 'sub:use Beta space' in (home / 'actions').read_text()
+    result = run('_tui_quick() { "$@"; }; _tui_choose() { _TUI_CHOICE=1; }; '
+                 '_node_curl() { printf \'%s\' \'{"proxies":{"Group":{"type":"Selector",'
+                 '"now":"Tokyo","all":["Tokyo","Hong Kong"]}}}\'; }; _tui_pick_node')
+    assert 'node:use -- Group Hong Kong' in (home / 'actions').read_text()
+    (home / 'actions').unlink()
+
     # Drive the real UI through a PTY. Verify keyboard navigation, saved ports,
     # start/stop dispatch, normal exit and signal cleanup without host services.
-    def session(shell='bash', interrupt=False, proxy=None, language=None):
+    def session(shell='bash', interrupt=False, proxy=None, language=None, quick=False):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 35, 110, 0, 0))
         original = termios.tcgetattr(slave)
@@ -181,14 +210,27 @@ tunstatus() { return 1; }
             elif interrupt:
                 os.killpg(process.pid, signal.SIGTERM)
             elif proxy is not None:
-                send('8')
-                expect('Number keys select immediately.')
-                key = {'on': '1', 'failed-on': '1', 'off': '2', 'stop': '3', 'failed-stop': '3'}[proxy]
-                send(key)
-                expect('Press any key to return')
-                send('x')
-                expect('Number keys select immediately.')
-                send('qq')
+                if quick:
+                    send({'on': 'o', 'off': 'f', 'stop': 'x', 'failed-on': 'o', 'failed-stop': 'x'}[proxy])
+                    if proxy in ('stop', 'failed-stop'):
+                        expect('[y/N]')
+                        send('y\n')
+                    if proxy.startswith('failed'):
+                        expect('Press any key to return')
+                        send('z')
+                        expect('Number keys select immediately.')
+                    else:
+                        expect('Done.')
+                    send('q')
+                else:
+                    send('8')
+                    expect('Number keys select immediately.')
+                    key = {'on': '1', 'failed-on': '1', 'off': '2', 'stop': '3', 'failed-stop': '3'}[proxy]
+                    send(key)
+                    expect('Press any key to return')
+                    send('x')
+                    expect('Number keys select immediately.')
+                    send('qq')
             elif shell == 'bash':
                 # One full idle refresh interval must leave the terminal untouched.
                 assert not select.select([master], [], [], 2.5)[0], 'idle TUI repainted unchanged content'
@@ -203,7 +245,7 @@ tunstatus() { return 1; }
                 expect('Number keys select immediately.')
                 send('q')
                 expect('Number keys select immediately.')
-                send('\x1b[B')
+                send('g\x1b[B')
                 expect('> 2  Subscriptions')
                 send('\x1b[A')
                 expect('> 1  Kernel & startup')
@@ -234,15 +276,15 @@ tunstatus() { return 1; }
                 send('x')
                 expect('Number keys select immediately.')
                 send('3')
-                expect('Subscription operation complete (fixture).')
-                expect('Press any key to return')
-                send('x')
+                expect('Beta')
                 expect('Number keys select immediately.')
+                send('2')
+                expect('Done.')
                 send('7')
-                expect('Node selected (fixture).')
-                expect('Press any key to return')
-                send('x')
+                expect('Hong Kong')
                 expect('Number keys select immediately.')
+                send('2')
+                expect('Done.')
                 send('8')
                 expect('Node selected (fixture).')
                 expect('Press any key to return')
@@ -310,6 +352,13 @@ tunstatus() { return 1; }
         session(shell, proxy='failed-stop')
         assert (home / 'running').exists()
         (home / 'fail-stop').unlink()
+    for shell in ('bash', 'zsh', 'fish'):
+        session(shell, proxy='on', quick=True)
+        session(shell, proxy='off', quick=True)
+        session(shell, proxy='stop', quick=True)
+    (home / 'fail-start').touch()
+    session(proxy='failed-on', quick=True)
+    (home / 'fail-start').unlink()
     run('clashctl secret true')
     assert read(mixin)['secret'] == 'true'
     run('clashctl secret 012345')
