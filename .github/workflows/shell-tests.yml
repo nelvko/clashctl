@@ -2,9 +2,9 @@ name: Shell tests
 
 on:
   push:
-    branches: [master, install-update]
+    branches: [main, install-update]
   pull_request:
-    branches: [master, install-update]
+    branches: [main, install-update]
   workflow_dispatch:
 
 permissions:

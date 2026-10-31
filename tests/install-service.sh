@@ -407,9 +407,9 @@ LOADER
         subscription_arg=''
         [ "$subscribing" != yes ] || subscription_arg=https://example.invalid/install-subscription
         if [ "$requested" = default ]; then
-            _install_initialize mihomo master '' '' '' "$backup_arg" "$subscription_arg"
+            _install_initialize mihomo main '' '' '' "$backup_arg" "$subscription_arg"
         else
-            _install_initialize mihomo master '' '' '' "$backup_arg" "$subscription_arg" "$requested"
+            _install_initialize mihomo main '' '' '' "$backup_arg" "$subscription_arg" "$requested"
         fi
         _install_next_step bash >"$initialize_home/footer" 2>&1
         [ "$migrating" -eq 0 ] || [ "${service_switch_pending:-false}" = false ] ||

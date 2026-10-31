@@ -190,7 +190,7 @@ STUB
 ) >>"$FIXTURE/scripts/preflight.sh"
 # 与真实加载器一致：重载服务库后需要重新检测管理方式。
 printf 'service_manager=\nfixture_version=old\n' >"$FIXTURE/scripts/cmd/clashctl.sh"
-"$REAL_GIT" -C "$FIXTURE" init -q -b master
+"$REAL_GIT" -C "$FIXTURE" init -q -b main
 "$REAL_GIT" -C "$FIXTURE" config user.email test@example.invalid
 "$REAL_GIT" -C "$FIXTURE" config user.name test
 "$REAL_GIT" -C "$FIXTURE" add .
@@ -199,7 +199,7 @@ printf 'service_manager=\nfixture_version=old\n' >"$FIXTURE/scripts/cmd/clashctl
 "$REAL_GIT" -C "$FIXTURE" checkout -qb legacy
 "$REAL_GIT" -C "$FIXTURE" rm -q .env.example
 "$REAL_GIT" -C "$FIXTURE" commit -qm legacy-layout
-"$REAL_GIT" -C "$FIXTURE" checkout -q master
+"$REAL_GIT" -C "$FIXTURE" checkout -q main
 cat >"$WORK_DIR/bin/git" <<'STUB'
 #!/usr/bin/env bash
 [ "${FAIL_FETCH:-0}" = 0 ] || exit 1
@@ -248,13 +248,13 @@ grep -q 'clone .*--quiet' "$WORK_DIR/quiet-git.log" || fail 'default source down
 [ "$(head -n 1 "$CLASHCTL_HOME/.clashctl-install")" = "$CLASHCTL_HOME" ] || fail 'pipeline did not record installation path'
 [ "$(stat -c %a "$CLASHCTL_HOME/.clashctl-install")" = 600 ] || fail 'installation marker is not private'
 # 默认安装实际使用并保存直连配置；模板注释及示例值不决定安装器行为。
-[ "$(cat "$CLASHCTL_HOME/data/download-options")" = 'mihomo|master|' ] || fail 'default install used an implicit proxy'
+[ "$(cat "$CLASHCTL_HOME/data/download-options")" = 'mihomo|main|' ] || fail 'default install used an implicit proxy'
 bash -c '. "$1"; [ -z "${GH_PROXY:-}" ]' _ "$CLASHCTL_HOME/.env" || fail 'default install persisted an implicit proxy'
 grep -q '安装完成' "$WORK_DIR/install.out" || fail 'missing install result'
 grep -q '新安装 clashctl' "$WORK_DIR/install.out" || fail 'missing initial installation state'
 grep -Fq "安装目录: $CLASHCTL_HOME" "$WORK_DIR/install.out" || fail 'missing installation directory'
 grep -Fq "安装目录: $CLASHCTL_HOME（CLASHCTL_HOME）" "$WORK_DIR/install.out" || fail 'missing installation directory source'
-grep -Fq '（分支 master）' "$WORK_DIR/install.out" || fail 'missing source branch'
+grep -Fq '（分支 main）' "$WORK_DIR/install.out" || fail 'missing source branch'
 grep -Fq '在当前终端执行（bash）:' "$WORK_DIR/install.out" || fail 'missing shell activation heading'
 grep -Fq 'source "$CLASHCTL_HOME/scripts/cmd/clashctl.sh"' "$WORK_DIR/install.out" || fail 'missing shell activation step'
 grep -Fq 'clashctl sub add --use "<URL>"' "$WORK_DIR/install.out" || fail 'missing subscription step'
@@ -390,7 +390,7 @@ if FAIL_PREPARE=1 FAIL_PREPARE_TIMEOUT=1 FAIL_DOWNLOAD_HINT=1 CLASHCTL_HOME="$in
     fail 'component preparation failure was ignored'
 fi
 [ "$(retry_command_from_output "$WORK_DIR/prepare-failed.out")" = \
-    "CLASHCTL_DOWNLOAD_TIMEOUT=0 bash $interrupted_home/install.sh --install-dir $interrupted_home --branch=master --gh-proxy=https://slow.proxy.test --service=auto" ] ||
+    "CLASHCTL_DOWNLOAD_TIMEOUT=0 bash $interrupted_home/install.sh --install-dir $interrupted_home --branch=main --gh-proxy=https://slow.proxy.test --service=auto" ] ||
     fail 'retry hint lost the proxy or unlimited timeout'
 python3 - "$WORK_DIR/prepare-failed.out" "$interrupted_home" <<'PY'
 from pathlib import Path
@@ -449,13 +449,13 @@ for form in separate equals; do
         { cat "$WORK_DIR/branch-update.out"; fail 'update failed for selected branch'; }
     grep -q 'fetch .* iu$' "$WORK_DIR/branch-update.log" || fail 'update did not fetch saved branch'
     CLASHCTL_HOME="$branch_home" CLASHCTL_UPDATE_BRANCH=legacy \
-        bash "$branch_home/install.sh" --service auto --branch master >"$WORK_DIR/branch-switch.out" 2>&1
-    [ "$(saved_options "$branch_home")" = 'mihomo|master|' ] || fail 'branch flag did not override environment and saved branch'
-    grep -q '^CLASHCTL_UPDATE_BRANCH=master$' "$branch_home/.env" || fail 'branch switch was not persisted'
+        bash "$branch_home/install.sh" --service auto --branch main >"$WORK_DIR/branch-switch.out" 2>&1
+    [ "$(saved_options "$branch_home")" = 'mihomo|main|' ] || fail 'branch flag did not override environment and saved branch'
+    grep -q '^CLASHCTL_UPDATE_BRANCH=main$' "$branch_home/.env" || fail 'branch switch was not persisted'
 done
 # .env 尚未生成时，失败提示中的命令也必须能恢复原分支。
 branch_failed_home="$WORK_DIR/branch-failed"
-if FAIL_PREPARE=1 CLASHCTL_HOME="$branch_failed_home" CLASHCTL_UPDATE_BRANCH=master \
+if FAIL_PREPARE=1 CLASHCTL_HOME="$branch_failed_home" CLASHCTL_UPDATE_BRANCH=main \
     bash "$REPO_DIR/install.sh" --service auto --branch iu >"$WORK_DIR/branch-failed.out" 2>&1; then
     fail 'failed branch installation succeeded'
 fi
@@ -477,7 +477,7 @@ for form in separate equals; do
         { cat "$WORK_DIR/options-$form.out"; fail "install options rejected: $form"; }
     [ "$(cat "$option_home/data/subscription")" = 'file:///install-sub?token=example&name=main' ] ||
         fail "install subscription was not passed through: $form"
-    [ "$(cat "$option_home/data/download-options")" = 'clash|master|' ] ||
+    [ "$(cat "$option_home/data/download-options")" = 'clash|main|' ] ||
         fail "install kernel option was not applied: $form"
     [ -f "$option_home/data/started" ] || fail "install subscription was not activated: $form"
     [ -f "$option_home/data/enabled" ] || fail "install subscription did not enable service: $form"
@@ -609,7 +609,7 @@ CLASHCTL_HOME="$WORK_DIR/readme-home" bash -c '
     cat "$WORK_DIR/readme.out"; fail 'README installation command failed'
 }
 grep -Eq '^GH_PROXY=https://gh-proxy\.org/?$' "$WORK_DIR/readme-home/.env" || fail 'README proxy was not persisted'
-grep -q '^CLASHCTL_UPDATE_BRANCH=master$' "$WORK_DIR/readme-home/.env" || fail 'README master branch was not persisted'
+grep -q '^CLASHCTL_UPDATE_BRANCH=main$' "$WORK_DIR/readme-home/.env" || fail 'README main branch was not persisted'
 # 续装保留已保存的选项；显式参数优先，空代理可切回直连。
 retry_home="$WORK_DIR/retry-options"
 CLASHCTL_HOME="$retry_home" CLASHCTL_UPDATE_BRANCH=iu bash "$REPO_DIR/install.sh" --service auto --kernel clash --gh-proxy=https://old.proxy.test >"$WORK_DIR/options.out" 2>&1
@@ -642,15 +642,15 @@ done
     cmp -s "$retry_home/.env" "$WORK_DIR/kernel-env.expected" || fail 'locked retry modified config'
     [ ! -e "$retry_home/.clashctl-incomplete" ] || fail 'locked retry changed installation state'
 )
-CLASHCTL_HOME="$retry_home" CLASHCTL_UPDATE_BRANCH=master GH_PROXY=https://env.proxy.test \
+CLASHCTL_HOME="$retry_home" CLASHCTL_UPDATE_BRANCH=main GH_PROXY=https://env.proxy.test \
     bash "$retry_home/install.sh" --service auto --kernel clash --gh-proxy=https://new.proxy.test >"$WORK_DIR/options.out" 2>&1
-[ "$(saved_options "$retry_home")" = 'clash|master|https://new.proxy.test' ] || fail 'saved options overrode retry arguments'
+[ "$(saved_options "$retry_home")" = 'clash|main|https://new.proxy.test' ] || fail 'saved options overrode retry arguments'
 env -u GH_PROXY -u CLASHCTL_UPDATE_BRANCH CLASHCTL_HOME="$retry_home" \
     bash "$retry_home/install.sh" --service auto --gh-proxy= >"$WORK_DIR/options.out" 2>&1
-[ "$(saved_options "$retry_home")" = 'clash|master|' ] || fail 'retry could not clear proxy'
+[ "$(saved_options "$retry_home")" = 'clash|main|' ] || fail 'retry could not clear proxy'
 env -u GH_PROXY -u CLASHCTL_UPDATE_BRANCH CLASHCTL_HOME="$retry_home" \
     bash "$retry_home/install.sh" --service auto >"$WORK_DIR/options.out" 2>&1
-[ "$(saved_options "$retry_home")" = 'clash|master|' ] || fail 'retry options were not persisted'
+[ "$(saved_options "$retry_home")" = 'clash|main|' ] || fail 'retry options were not persisted'
 CLASHCTL_HOME="$retry_home" CLASHCTL_DOWNLOAD_TIMEOUT=180 bash "$retry_home/install.sh" --service auto \
     >"$WORK_DIR/options.out" 2>&1
 [ "$(saved_timeout "$retry_home")" = 180 ] || fail 'retry timeout was overridden by saved config'
@@ -663,7 +663,7 @@ CLASHCTL_HOME="$ignored_existing" GH_PROXY=https://env.proxy.test \
     bash "$retry_home/install.sh" --service auto --install-dir "$retry_home" --gh-proxy=https://flag-existing.test \
     >"$WORK_DIR/existing-home.out" 2>&1 ||
     { cat "$WORK_DIR/existing-home.out"; fail 'home could not update existing installation'; }
-[ "$(saved_options "$retry_home")" = 'clash|master|https://flag-existing.test' ] ||
+[ "$(saved_options "$retry_home")" = 'clash|main|https://flag-existing.test' ] ||
     fail 'home did not update the selected installation'
 [ ! -e "$ignored_existing" ] || fail 'existing installation update used CLASHCTL_HOME instead of home'
 # 源码不能通过重试初始化获得安装身份；克隆真实安装也不会继承 Git 私有标记。
@@ -689,7 +689,7 @@ for file in data/private bin/private archives/private resources/dist/index.html 
 done
 (
     cd "$WORK_DIR"
-    FAIL_FETCH=1 FAIL_DOWNLOAD=1 CLASHCTL_HOME="$local_home" CLASHCTL_UPDATE_BRANCH=master \
+    FAIL_FETCH=1 FAIL_DOWNLOAD=1 CLASHCTL_HOME="$local_home" CLASHCTL_UPDATE_BRANCH=main \
         bash "$local_source/install.sh" --service auto --local --branch iu --gh-proxy=https://local.proxy.test
 ) >"$WORK_DIR/local.out" 2>&1 || { cat "$WORK_DIR/local.out"; fail 'local installation failed'; }
 grep -qx 'fixture_version=uncommitted' "$local_home/scripts/cmd/clashctl.sh" || fail 'local edits were not installed'
@@ -938,10 +938,10 @@ cp -a "$legacy_v2" "$branch_migration_home"
 sed -i "s|^CLASHCTL_INSTALLATION_HOME=.*|CLASHCTL_INSTALLATION_HOME=$branch_migration_home|" \
     "$branch_migration_home/.clashctl-installation"
 CLASHCTL_HOME="$branch_migration_home" CLASHCTL_UPDATE_BRANCH=legacy \
-    bash "$local_source/install.sh" --service auto --local --branch master >"$WORK_DIR/branch-migration.out" 2>&1 ||
+    bash "$local_source/install.sh" --service auto --local --branch main >"$WORK_DIR/branch-migration.out" 2>&1 ||
     { cat "$WORK_DIR/branch-migration.out"; fail 'branch selection during migration failed'; }
-grep -q '^CLASHCTL_UPDATE_BRANCH=master$' "$branch_migration_home/.env" || fail 'migration did not persist branch flag'
-[ "$(cat "$branch_migration_home/data/download-options")" = 'mihomo|master|https://legacy.proxy.test' ] || fail 'migration lost explicit branch'
+grep -q '^CLASHCTL_UPDATE_BRANCH=main$' "$branch_migration_home/.env" || fail 'migration did not persist branch flag'
+[ "$(cat "$branch_migration_home/data/download-options")" = 'mihomo|main|https://legacy.proxy.test' ] || fail 'migration lost explicit branch'
 CLASHCTL_HOME="$WORK_DIR/ignored-legacy-v2" bash "$local_source/install.sh" --service auto --kernel clash --local \
     --install-dir "$legacy_v2" >"$WORK_DIR/legacy-success.out" 2>&1 ||
     { cat "$WORK_DIR/legacy-success.out"; fail 'legacy v2 migration failed'; }
@@ -1084,7 +1084,7 @@ awk '
 [ "$(<"$legacy_v1/data/config.yaml")" = 'legacy v1 config' ] || fail 'legacy v1 config was not migrated'
 [ "$(<"$legacy_v1/data/profiles/first.yaml")" = 'legacy v1 profile after update' ] ||
     fail 'migration did not preserve the latest profile'
-[ "$(<"$legacy_v1/data/download-options")" = 'clash|master|https://legacy.proxy.test' ] ||
+[ "$(<"$legacy_v1/data/download-options")" = 'clash|main|https://legacy.proxy.test' ] ||
     fail 'quoted/exported old kernel or proxy was not migrated'
 for file in resources/cache.db resources/dist/index.html resources/proxies/provider resources/rules/provider; do
     cmp "$legacy_v1_backup/$file" "$legacy_v1/$file" || fail "legacy runtime resource was not migrated: $file"
@@ -1252,7 +1252,7 @@ def install_in_terminal(name, args=(), subscription=None):
     if pid == 0:
         os.environ.pop("CI", None)
         os.environ["CLASHCTL_HOME"] = home
-        os.environ["CLASHCTL_UPDATE_BRANCH"] = "master"
+        os.environ["CLASHCTL_UPDATE_BRANCH"] = "main"
         os.environ["TERM"] = "xterm-256color"
         os.environ["INPUTRC"] = "/dev/null"
         os.execvp("bash", ["bash", "-c",
@@ -1351,7 +1351,7 @@ assert prompt not in output, "flag installation prompted for a subscription"
 with open(home + "/data/subscription") as saved:
     assert saved.read() == "file:///from-flag"
 with open(home + "/data/download-options") as saved:
-    assert saved.read().startswith("clash|master|")
+    assert saved.read().startswith("clash|main|")
 PTY
 
 . "$REPO_DIR/scripts/cmd/update.sh"
@@ -1362,7 +1362,7 @@ _ui_error() { printf '%s\n' "$*" >&2; }
 _ui_info() { printf '%s\n' "$*"; }
 _ui_ok() { :; }
 _ui_ok_out() { printf '%s\n' "$*"; }
-CLASHCTL_UPDATE_BRANCH=master
+CLASHCTL_UPDATE_BRANCH=main
 printf 'user config' >"$CLASHCTL_HOME/data/config.yaml"
 cp "$CLASHCTL_HOME/.env" "$WORK_DIR/env.before"
 printf 'fixture_version=new\n' >"$FIXTURE/scripts/cmd/clashctl.sh"
@@ -1414,11 +1414,11 @@ printf 'obsolete=true\n' >"$archive_source/scripts/obsolete.sh"
 tar -czf "$SOURCE_ARCHIVE" -C "$WORK_DIR" archive-source
 archive_home="$WORK_DIR/archive-home"
 PATH="$no_git_bin" CLASHCTL_HOME="$archive_home" CLASHCTL_UPDATE_BRANCH=legacy GH_PROXY=https://proxy.example \
-    bash "$REPO_DIR/install.sh" --service auto --branch master >"$WORK_DIR/archive-install.out" 2>&1 || { cat "$WORK_DIR/archive-install.out"; fail 'curl fallback install failed'; }
+    bash "$REPO_DIR/install.sh" --service auto --branch main >"$WORK_DIR/archive-install.out" 2>&1 || { cat "$WORK_DIR/archive-install.out"; fail 'curl fallback install failed'; }
 [ ! -e "$archive_home/.git" ] || fail 'fallback created a Git repository'
 [ "$(tail -n 1 "$archive_home/.clashctl-install")" = archive ] || fail 'archive type was not recorded'
 [ -s "$archive_home/.clashctl-files" ] || fail 'archive file manifest missing'
-grep -Fq 'https://proxy.example/https://github.com/HolyDDL/clashctl-daemon/archive/refs/heads/master.tar.gz' "$DOWNLOAD_LOG" || fail 'source archive ignored proxy or branch'
+grep -Fq 'https://proxy.example/https://github.com/HolyDDL/clashctl-daemon/archive/refs/heads/main.tar.gz' "$DOWNLOAD_LOG" || fail 'source archive ignored proxy or branch'
 # wget 只负责拉取源码，此处初始化桩不依赖 curl。
 mv "$no_git_bin/curl" "$WORK_DIR/saved-curl"
 PATH="$no_git_bin" CLASHCTL_HOME="$WORK_DIR/wget-home" GH_PROXY='' \

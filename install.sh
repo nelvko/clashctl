@@ -851,7 +851,7 @@ _install_initialize() {
     _install_restore_operation_lock || return 1
     [ "${4:-}" != x ] || CLASHCTL_DOWNLOAD_TIMEOUT=$5
     # 参数在 main 中保存，不受 preflight 加载已有 .env 的影响。
-    local kernel=${1:-${CLASHCTL_KERNEL:-mihomo}} branch=${2:-${CLASHCTL_UPDATE_BRANCH:-master}}
+    local kernel=${1:-${CLASHCTL_KERNEL:-mihomo}} branch=${2:-${CLASHCTL_UPDATE_BRANCH:-main}}
     local proxy=${3:-} subscription=${7:-} requested_service=${8:-systemd-user} rc secret shell_backup=''
     _INSTALL_SUBSCRIPTION_RETRY=false
     export -n subscription secret
@@ -1117,7 +1117,7 @@ main() (
                           auto 沿用已有方式；新装普通用户优先用户级 systemd
 
 下载与更新:
-  --branch <分支>         源码及后续更新分支（新安装默认 master）
+  --branch <分支>         源码及后续更新分支（新安装默认 main）
                           配合 --local 时，仅设置后续更新分支
   --gh-proxy <URL>        GitHub 下载代理前缀；--gh-proxy= 表示直连
   --verbose               显示源码下载详情、完整下载地址和缓存路径
@@ -1139,7 +1139,7 @@ main() (
   自定义安装位置（需当前用户可写，且与源码目录分开）:
     bash install.sh --local --install-dir /data/clashctl
   指定更新分支:
-    bash install.sh --branch master
+    bash install.sh --branch main
 
 完整安装再次运行时保留服务启停与自启设置，按需补齐组件。
 显式 --sub 仍会激活订阅并启动内核。
@@ -1214,7 +1214,7 @@ HELP
             else
                 # 管道入口没有伴随库；先取得本次源码，不能借用旧安装中的锁实现。
                 stage=$(mktemp -d "${install_home}.download.XXXXXX") || return 1
-                _install_prepare_source "$stage" "${branch:-master}" "$proxy" false '' || return 1
+                _install_prepare_source "$stage" "${branch:-main}" "$proxy" false '' || return 1
                 _install_lock "$stage" || return 1
             fi
             # 等待准备/加锁期间，另一操作可能已经卸载或替换此目录。
@@ -1241,11 +1241,11 @@ HELP
                     return 1
                 fi
                 kernel=${requested_kernel:-${CLASHCTL_KERNEL:-mihomo}}
-                branch=${requested_branch:-${CLASHCTL_UPDATE_BRANCH:-master}}
+                branch=${requested_branch:-${CLASHCTL_UPDATE_BRANCH:-main}}
                 [ "$proxy_set" = x ] && proxy=$requested_proxy || proxy=${GH_PROXY:-}
             else
                 kernel=${kernel:-mihomo}
-                branch=${branch:-master}
+                branch=${branch:-main}
             fi
             export CLASHCTL_HOME="$install_home" CLASHCTL_SRC="$install_home"
             if [ -f "$install_home/.env" ] && [ ! -e "$install_home/.clashctl-uninitialized" ] &&
@@ -1298,7 +1298,7 @@ HELP
             legacy_kernel=${CLASHCTL_KERNEL:-mihomo}
             case $legacy_kernel in mihomo | clash) ;; *) return 1 ;; esac
             kernel=${requested_kernel:-${CLASHCTL_KERNEL:-mihomo}}
-            branch=${requested_branch:-${CLASHCTL_UPDATE_BRANCH:-master}}
+            branch=${requested_branch:-${CLASHCTL_UPDATE_BRANCH:-main}}
             [ "$proxy_set" = x ] && proxy=$requested_proxy || proxy=${GH_PROXY:-}
         else
             local old_kernel old_proxy
@@ -1320,7 +1320,7 @@ HELP
     fi
     if [ -z "$existing_kind" ] || [ -n "$legacy_home" ]; then
         [ -z "$legacy_home" ] || legacy_kernel=${legacy_kernel:-mihomo}
-        branch=${branch:-master}
+        branch=${branch:-main}
         if [ -n "$legacy_home" ]; then
             if [ "$legacy_home" = "$install_home" ]; then
                 _install_intro '原路径升级' "$install_home" "$home_source" "$local_source" "$branch"

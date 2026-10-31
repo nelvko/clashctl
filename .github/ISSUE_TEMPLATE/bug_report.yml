@@ -22,7 +22,7 @@ body:
     id: branch
     attributes:
       label: 使用的分支
-      placeholder: master / ...
+      placeholder: main / ...
     validations:
       required: true
 

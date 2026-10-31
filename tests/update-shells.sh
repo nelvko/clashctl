@@ -14,7 +14,7 @@ cp -a "$REPO_DIR/scripts" "$SOURCE_REPO/"
 cp "$REPO_DIR/"{install.sh,uninstall.sh,.env.example,.gitignore} "$SOURCE_REPO/"
 printf 'CLASHCTL_TEST_VERSION=old\n' >"$SOURCE_REPO/scripts/cmd/version.sh"
 printf '\nfunction __clashctl_test_version; echo old; end\n' >>"$SOURCE_REPO/scripts/cmd/clashctl.fish"
-"$REAL_GIT" -C "$SOURCE_REPO" init -q -b master
+"$REAL_GIT" -C "$SOURCE_REPO" init -q -b main
 "$REAL_GIT" -C "$SOURCE_REPO" config user.email test@example.invalid
 "$REAL_GIT" -C "$SOURCE_REPO" config user.name test
 "$REAL_GIT" -C "$SOURCE_REPO" add .
@@ -32,7 +32,7 @@ for shell in bash zsh; do
             _source_manifest "$home_dir" >"$home_dir/.clashctl-files"
         fi
         printf '%s\n%s\n' "$home_dir" "$method" >"$home_dir/.clashctl-install"
-        printf 'CLASHCTL_KERNEL=mihomo\nCLASHCTL_UPDATE_BRANCH=master\nGH_PROXY=\n' >"$home_dir/.env"
+        printf 'CLASHCTL_KERNEL=mihomo\nCLASHCTL_UPDATE_BRANCH=main\nGH_PROXY=\n' >"$home_dir/.env"
     done
 done
 cp -a "$WORK_DIR/bash-archive" "$WORK_DIR/fish-archive"
@@ -127,7 +127,7 @@ for shell in bash zsh; do
         "$REAL_GIT" clone -q "$SOURCE_REPO" "$home_dir"
         "$REAL_GIT" -C "$home_dir" reset --hard -q "$INITIAL_HEAD"
         printf '%s\ngit\n' "$home_dir" >"$home_dir/.clashctl-install"
-        printf 'CLASHCTL_KERNEL=mihomo\nCLASHCTL_UPDATE_BRANCH=master\nGH_PROXY=\n' >"$home_dir/.env"
+        printf 'CLASHCTL_KERNEL=mihomo\nCLASHCTL_UPDATE_BRANCH=main\nGH_PROXY=\n' >"$home_dir/.env"
         mkdir "$home_dir/data"
         printf 'user runtime\n' >"$home_dir/data/private"
         printf 'untracked user file\n' >"$home_dir/user-notes"
@@ -148,7 +148,7 @@ for shell in bash zsh; do
             continue
         fi
         [ "$("$REAL_GIT" -C "$home_dir" rev-parse HEAD)" = "$INITIAL_HEAD" ] || fail "$shell rollback changed HEAD: $failure"
-        [ "$("$REAL_GIT" -C "$home_dir" symbolic-ref HEAD)" = refs/heads/master ] || fail "$shell rollback lost branch: $failure"
+        [ "$("$REAL_GIT" -C "$home_dir" symbolic-ref HEAD)" = refs/heads/main ] || fail "$shell rollback lost branch: $failure"
         [ -z "$("$REAL_GIT" -C "$home_dir" status --porcelain --untracked-files=no)" ] || fail "$shell rollback left tracked changes: $failure"
         if [ "$failure" = collision ]; then
             [ "$(cat "$home_dir/scripts/new-helper.sh")" = 'user helper' ] || fail 'update overwrote untracked collision'

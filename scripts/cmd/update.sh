@@ -26,7 +26,7 @@ clashupdate() {
 
 _update_scripts() (
     set -o pipefail
-    local branch=${CLASHCTL_UPDATE_BRANCH:-master} url target dirty method work='' stage rc install_source
+    local branch=${CLASHCTL_UPDATE_BRANCH:-main} url target dirty method work='' stage rc install_source
     trap '
         rc=$?
         trap - EXIT
