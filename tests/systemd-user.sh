@@ -64,9 +64,9 @@ systemctl() {
         ;;
     show)
         case "$*" in
-        'show -p Version --value') printf '%s\n' "$MANAGER_VERSION"; return "$VERSION_QUERY_RC" ;;
-        *MainPID*) printf '%s\n' "$MAIN_PID" ;;
-        *FragmentPath*) printf '%s\n' "$FRAGMENT_PATH" ;;
+        'show -p Version') printf 'Version=%s\n' "$MANAGER_VERSION"; return "$VERSION_QUERY_RC" ;;
+        *MainPID*) printf 'MainPID=%s\n' "$MAIN_PID" ;;
+        *FragmentPath*) printf 'FragmentPath=%s\n' "$FRAGMENT_PATH" ;;
         *) fail "unexpected user manager query: $*" ;;
         esac
         ;;
@@ -164,7 +164,7 @@ test_availability() (
     MANAGER_AVAILABLE=0
     if service_user_available; then fail 'unavailable user manager was accepted'; fi
     expect_call 'systemctl --user show-environment'
-    expect_call 'systemctl --user show -p Version --value'
+    expect_call 'systemctl --user show -p Version'
     expect_no_call is-system-running
 )
 
@@ -205,7 +205,7 @@ test_native_lifecycle_and_queries() (
     expect_call 'systemctl --user status mihomo --no-pager'
     expect_call 'systemctl --user enable --quiet mihomo'
     expect_call 'systemctl --user disable --quiet mihomo'
-    expect_call 'systemctl --user show mihomo -p MainPID --value'
+    expect_call 'systemctl --user show mihomo -p MainPID'
     expect_call 'journalctl --user -u mihomo --no-pager -n 4'
     expect_call 'journalctl --user -u mihomo -q -f -n 0'
     expect_no_call sudo
@@ -219,7 +219,7 @@ test_install_conflict_and_removal() (
     FRAGMENT_PATH=/usr/lib/systemd/user/mihomo.service
     if install_service >/dev/null 2>&1; then fail 'installer took over a loaded foreign user unit'; fi
     [ ! -e "$target" ] || fail 'foreign loaded unit caused a local unit to be written'
-    expect_call 'systemctl --user show mihomo.service -p FragmentPath --value'
+    expect_call 'systemctl --user show mihomo.service -p FragmentPath'
     expect_no_call daemon-reload
     FRAGMENT_PATH=''
     mkdir -p -- "$(dirname -- "$target")"
@@ -243,6 +243,19 @@ test_install_conflict_and_removal() (
     fi
     expect_call 'systemctl --user daemon-reload'
     expect_no_call 'systemctl --user enable'
+    # 重装刷新 yq 路径与端口钩子，同时不启动服务、不改变自启设置。
+    (
+        BIN_YQ="$WORK_DIR/repaired-yq"
+        : >"$CALLS"
+        install_service || fail 'could not refresh user unit'
+        command grep -Fqx "ExecCondition=$BIN_YQ -e '.tun.enable != true' $CLASH_CONFIG_RUNTIME" "$target" ||
+            fail 'refresh did not update the yq condition'
+        command grep -Fq 'kernel-start.sh prepare' "$target" || fail 'refresh lost the port check'
+        command grep -Fq 'kernel-start.sh remember' "$target" || fail 'refresh lost port persistence'
+        expect_no_call 'systemctl --user enable'
+        expect_no_call 'systemctl --user start'
+        expect_call 'systemctl --user daemon-reload'
+    )
     service_start || fail 'installed user service could not start'
     service_enable
     uninstall_service || fail 'could not uninstall user unit'

@@ -41,17 +41,29 @@ _service_privileged_pid() {
     _service_process_record_pid "$record" 2>/dev/null
 }
 
+# 读取属性时解析 key=value，兼容不支持 --value 的旧版 systemctl。
+# 保留查询失败状态，避免将连接失败或缺失属性误判为空值。
+_service_systemctl_property() {
+    local property=$1 output
+    shift
+    output=$(systemctl "$@" -p "$property") || return 1
+    case "$output" in
+    "$property="*) printf '%s\n' "${output#*=}" ;;
+    *) return 1 ;;
+    esac
+}
+
 # 只返回与本次安装的二进制、启动参数一致的 PID，供 TUN 归属检查使用。
 service_main_pid() {
     detect_service_manager
     local pid='' expected_argv record
     case "$service_manager" in
-    systemd) pid=$(systemctl show "$CLASHCTL_KERNEL" -p MainPID --value 2>/dev/null) ;;
+    systemd) pid=$(_service_systemctl_property MainPID show "$CLASHCTL_KERNEL" 2>/dev/null) || return 1 ;;
     systemd-user)
         if _service_privileged_marker_exists; then
             pid=$(_service_privileged_pid) || return 1
         else
-            pid=$(systemctl --user show "$CLASHCTL_KERNEL" -p MainPID --value 2>/dev/null)
+            pid=$(_service_systemctl_property MainPID --user show "$CLASHCTL_KERNEL" 2>/dev/null) || return 1
         fi
         ;;
     runit) pid=$(sv status "$CLASHCTL_KERNEL" 2>/dev/null | sed -n 's/.*(pid \([0-9]*\)).*/\1/p') ;;
@@ -147,7 +159,7 @@ service_user_available() {
     local version
     command -v systemctl >/dev/null 2>&1 || return 1
     systemctl --user show-environment >/dev/null 2>&1 || return 1
-    version=$(systemctl --user show -p Version --value 2>/dev/null) || return 1
+    version=$(_service_systemctl_property Version --user show 2>/dev/null) || return 1
     [[ $version =~ ^([0-9]+)([[:space:].+~-]|$) ]] || return 1
     version=${BASH_REMATCH[1]}
     [ "${#version}" -le 5 ] && [ "$((10#$version))" -ge 243 ]
@@ -863,9 +875,9 @@ _service_check_conflict() {
     fi
     if [ "$service_manager" = systemd ] || [ "$service_manager" = systemd-user ]; then
         if [ "$service_manager" = systemd-user ]; then
-            fragment=$(systemctl --user show "$CLASHCTL_KERNEL.service" -p FragmentPath --value) || return 1
+            fragment=$(_service_systemctl_property FragmentPath --user show "$CLASHCTL_KERNEL.service") || return 1
         else
-            fragment=$(systemctl show "$CLASHCTL_KERNEL.service" -p FragmentPath --value) || return 1
+            fragment=$(_service_systemctl_property FragmentPath show "$CLASHCTL_KERNEL.service") || return 1
         fi
         [ -z "$fragment" ] || { _ui_error "同名服务已存在：$fragment"; return 1; }
     fi

@@ -11,7 +11,12 @@ export CLASHCTL_HOME="$WORK_DIR/home" CLASHCTL_SRC="$REPO_DIR" CLASHCTL_KERNEL=m
 # 模拟系统级服务，避免普通用户运行测试时被自动切换为 nohup。
 _is_root() { return 0; }
 _service_target() { printf '%s/unit.service\n' "$WORK_DIR"; }
-systemctl() { :; }
+systemctl() {
+    case "$*" in
+    'show mihomo.service -p FragmentPath') printf 'FragmentPath=\n' ;;
+    *) : ;;
+    esac
+}
 service_enable() { touch "$WORK_DIR/enabled"; }
 service_disable() { rm -f "$WORK_DIR/enabled"; }
 service_is_active() { [ -f "$WORK_DIR/active" ]; }

@@ -18,6 +18,12 @@ printf '%s\n' "$*" >>"$UNINSTALL_CALLS"
 case $1 in
 is-active) [ -f "$UNINSTALL_ACTIVE" ] ;;
 stop) [ "${FAIL_STOP:-0}" = 0 ] && rm -f "$UNINSTALL_ACTIVE" ;;
+show)
+    case "$*" in
+    *' -p FragmentPath') printf 'FragmentPath=\n' ;;
+    *) exit 91 ;;
+    esac
+    ;;
 *) exit 0 ;;
 esac
 STUB

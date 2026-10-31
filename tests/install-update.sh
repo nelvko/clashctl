@@ -13,6 +13,11 @@ cleanup() {
 }
 trap cleanup EXIT
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+saved_options() (
+    . "$1/.env"
+    printf '%s|%s|%s' "$CLASHCTL_KERNEL" "$CLASHCTL_UPDATE_BRANCH" "$GH_PROXY"
+)
+saved_timeout() ( . "$1/.env"; printf '%s' "$CLASHCTL_DOWNLOAD_TIMEOUT"; )
 retry_command_from_output() {
     awk '/^重试:$/ {
         if ((getline) > 0 && /^  /) {
@@ -61,6 +66,7 @@ CLASH_RESOURCES_DIR="$CLASHCTL_HOME/resources"
 CLASH_CONFIG_BASE="$CLASH_DATA_DIR/config.yaml"
 CLASH_CONFIG_MIXIN="$CLASH_DATA_DIR/mixin.yaml"
 BIN_YQ=fixture_yq
+[ "${TEST_LOCAL_YQ:-0}" != 1 ] || BIN_YQ="$CLASHCTL_HOME/bin/yq"
 fixture_yq() {
     if [ "${1:-}" = '.mode // "rule"' ]; then
         if [ -s "$CLASH_CONFIG_BASE" ]; then printf rule; else printf direct; fi
@@ -97,6 +103,22 @@ prepare_zip() {
     fi
     mkdir -p "$CLASHCTL_HOME/bin"
     printf kernel >"$CLASHCTL_HOME/bin/kernel"
+    printf '%s\n' "$*" >"$CLASHCTL_HOME/data/prepared-components"
+    for component in "$@"; do
+        case $component in
+        kernel)
+            mkdir -p "$(dirname -- "$BIN_KERNEL")"
+            printf kernel >"$BIN_KERNEL"
+            chmod 755 "$BIN_KERNEL"
+            ;;
+        yq)
+            if [ "${TEST_LOCAL_YQ:-0}" = 1 ]; then
+                printf '#!/bin/sh\nprintf existing-secret\n' >"$BIN_YQ"
+                chmod 755 "$BIN_YQ"
+            fi
+            ;;
+        esac
+    done
     printf '%s|%s|%s\n' "$CLASHCTL_KERNEL" "$CLASHCTL_UPDATE_BRANCH" "$GH_PROXY" >"$CLASHCTL_HOME/data/download-options"
     printf '%s\n' "$CLASHCTL_DOWNLOAD_TIMEOUT" >"$CLASHCTL_HOME/data/download-timeout"
     printf '%s\n' "${_INSTALL_VERBOSE:-}" >"$CLASHCTL_HOME/data/download-verbose"
@@ -305,6 +327,43 @@ TEST_SERVICE_MANAGER=systemd CLASHCTL_HOME="$direct_managed_home" bash "$REPO_DI
     >"$WORK_DIR/direct-managed.out" 2>&1 || fail 'managed direct install failed'
 [ -f "$direct_managed_home/data/started" ] || fail 'managed direct install did not start the kernel'
 [ -f "$direct_managed_home/data/enabled" ] || fail 'managed direct install did not enable autostart'
+# 重装应保留运行/停止 × 启用/禁用四种组合，已有内核无需下载。
+for running in yes no; do
+    for enabled in yes no; do
+        rm -f "$direct_managed_home/data/started" "$direct_managed_home/data/enabled"
+        [ "$running" != yes ] || touch "$direct_managed_home/data/started"
+        [ "$enabled" != yes ] || touch "$direct_managed_home/data/enabled"
+        FAIL_PREPARE=1 TEST_SERVICE_MANAGER=systemd CLASHCTL_HOME="$direct_managed_home" \
+            bash "$REPO_DIR/install.sh" --service auto >"$WORK_DIR/reinstall.out" 2>&1 || {
+                cat "$WORK_DIR/reinstall.out"; fail 'reinstall downloaded an existing kernel or failed';
+            }
+        actual_running=no actual_enabled=no
+        [ ! -f "$direct_managed_home/data/started" ] || actual_running=yes
+        [ ! -f "$direct_managed_home/data/enabled" ] || actual_enabled=yes
+        [ "$running:$enabled" = "$actual_running:$actual_enabled" ] || fail 'reinstall changed service state'
+    done
+done
+# 缺失组件修复失败再重试，也不能把已完成但停止的安装当作首次安装启动。
+rm "$direct_managed_home/bin/mihomo"
+if FAIL_PREPARE=1 TEST_SERVICE_MANAGER=systemd CLASHCTL_HOME="$direct_managed_home" \
+    bash "$REPO_DIR/install.sh" --service auto >"$WORK_DIR/repair-failed.out" 2>&1; then
+    fail 'missing kernel repair failure was ignored'
+fi
+[ ! -e "$direct_managed_home/.clashctl-incomplete" ] || fail 'repair failure lost completed installation state'
+TEST_SERVICE_MANAGER=systemd CLASHCTL_HOME="$direct_managed_home" \
+    bash "$REPO_DIR/install.sh" --service auto >"$WORK_DIR/repair.out" 2>&1
+[ -x "$direct_managed_home/bin/mihomo" ] || fail 'missing kernel was not repaired'
+[ ! -e "$direct_managed_home/data/started" ] || fail 'repair retry started a stopped kernel'
+[ ! -e "$direct_managed_home/data/enabled" ] || fail 'repair retry enabled autostart'
+printf preserved-kernel >"$direct_managed_home/bin/mihomo"
+TEST_LOCAL_YQ=1 TEST_SERVICE_MANAGER=systemd CLASHCTL_HOME="$direct_managed_home" \
+    bash "$REPO_DIR/install.sh" --service auto >"$WORK_DIR/repair-yq.out" 2>&1
+[ -x "$direct_managed_home/bin/yq" ] || fail 'missing yq was not repaired'
+[ "$(cat "$direct_managed_home/data/prepared-components")" = yq ] || fail 'yq repair downloaded other components'
+[ "$(cat "$direct_managed_home/bin/mihomo")" = preserved-kernel ] || fail 'yq repair overwrote existing kernel'
+[ ! -e "$direct_managed_home/data/started" ] || fail 'yq repair started a stopped kernel'
+
+
 grep -Fq '已注册 systemd 服务' "$WORK_DIR/direct-managed.out" || fail 'managed direct install omitted registration result'
 grep -Fq '已设置开机自启' "$WORK_DIR/direct-managed.out" || fail 'managed direct install omitted autostart result'
 # 无订阅的启动失败仍是安装失败，不能输出成功或设置自启。
@@ -379,7 +438,7 @@ for form in separate equals; do
     grep -q '^CLASHCTL_UPDATE_BRANCH=iu$' "$branch_home/.env" || fail 'branch flag was not persisted'
     env -u CLASHCTL_UPDATE_BRANCH CLASHCTL_HOME="$branch_home" \
         bash "$branch_home/install.sh" --service auto >"$WORK_DIR/branch-retry.out" 2>&1
-    [ "$(cat "$branch_home/data/download-options")" = 'mihomo|iu|' ] || fail 'retry lost selected branch'
+    [ "$(saved_options "$branch_home")" = 'mihomo|iu|' ] || fail 'retry lost selected branch'
     : >"$WORK_DIR/branch-update.log"
     (
         export CLASHCTL_HOME="$branch_home" CLASHCTL_SRC="$branch_home" GIT_CALL_LOG="$WORK_DIR/branch-update.log"
@@ -391,7 +450,7 @@ for form in separate equals; do
     grep -q 'fetch .* iu$' "$WORK_DIR/branch-update.log" || fail 'update did not fetch saved branch'
     CLASHCTL_HOME="$branch_home" CLASHCTL_UPDATE_BRANCH=legacy \
         bash "$branch_home/install.sh" --service auto --branch master >"$WORK_DIR/branch-switch.out" 2>&1
-    [ "$(cat "$branch_home/data/download-options")" = 'mihomo|master|' ] || fail 'branch flag did not override environment and saved branch'
+    [ "$(saved_options "$branch_home")" = 'mihomo|master|' ] || fail 'branch flag did not override environment and saved branch'
     grep -q '^CLASHCTL_UPDATE_BRANCH=master$' "$branch_home/.env" || fail 'branch switch was not persisted'
 done
 # .env 尚未生成时，失败提示中的命令也必须能恢复原分支。
@@ -585,26 +644,26 @@ done
 )
 CLASHCTL_HOME="$retry_home" CLASHCTL_UPDATE_BRANCH=master GH_PROXY=https://env.proxy.test \
     bash "$retry_home/install.sh" --service auto --kernel clash --gh-proxy=https://new.proxy.test >"$WORK_DIR/options.out" 2>&1
-[ "$(cat "$retry_home/data/download-options")" = 'clash|master|https://new.proxy.test' ] || fail 'saved options overrode retry arguments'
+[ "$(saved_options "$retry_home")" = 'clash|master|https://new.proxy.test' ] || fail 'saved options overrode retry arguments'
 env -u GH_PROXY -u CLASHCTL_UPDATE_BRANCH CLASHCTL_HOME="$retry_home" \
     bash "$retry_home/install.sh" --service auto --gh-proxy= >"$WORK_DIR/options.out" 2>&1
-[ "$(cat "$retry_home/data/download-options")" = 'clash|master|' ] || fail 'retry could not clear proxy'
+[ "$(saved_options "$retry_home")" = 'clash|master|' ] || fail 'retry could not clear proxy'
 env -u GH_PROXY -u CLASHCTL_UPDATE_BRANCH CLASHCTL_HOME="$retry_home" \
     bash "$retry_home/install.sh" --service auto >"$WORK_DIR/options.out" 2>&1
-[ "$(cat "$retry_home/data/download-options")" = 'clash|master|' ] || fail 'retry options were not persisted'
+[ "$(saved_options "$retry_home")" = 'clash|master|' ] || fail 'retry options were not persisted'
 CLASHCTL_HOME="$retry_home" CLASHCTL_DOWNLOAD_TIMEOUT=180 bash "$retry_home/install.sh" --service auto \
     >"$WORK_DIR/options.out" 2>&1
-[ "$(cat "$retry_home/data/download-timeout")" = 180 ] || fail 'retry timeout was overridden by saved config'
+[ "$(saved_timeout "$retry_home")" = 180 ] || fail 'retry timeout was overridden by saved config'
 env -u CLASHCTL_DOWNLOAD_TIMEOUT CLASHCTL_HOME="$retry_home" \
     bash "$retry_home/install.sh" --service auto >"$WORK_DIR/timeout-persisted.out" 2>&1
-[ "$(cat "$retry_home/data/download-timeout")" = 180 ] || fail 'retry did not persist timeout override'
+[ "$(saved_timeout "$retry_home")" = 180 ] || fail 'retry did not persist timeout override'
 # 指向已有安装时，--install-dir 也必须决定更新目标，而不是环境变量或已保存的路径。
 ignored_existing="$WORK_DIR/ignored-existing"
 CLASHCTL_HOME="$ignored_existing" GH_PROXY=https://env.proxy.test \
     bash "$retry_home/install.sh" --service auto --install-dir "$retry_home" --gh-proxy=https://flag-existing.test \
     >"$WORK_DIR/existing-home.out" 2>&1 ||
     { cat "$WORK_DIR/existing-home.out"; fail 'home could not update existing installation'; }
-[ "$(cat "$retry_home/data/download-options")" = 'clash|master|https://flag-existing.test' ] ||
+[ "$(saved_options "$retry_home")" = 'clash|master|https://flag-existing.test' ] ||
     fail 'home did not update the selected installation'
 [ ! -e "$ignored_existing" ] || fail 'existing installation update used CLASHCTL_HOME instead of home'
 # 源码不能通过重试初始化获得安装身份；克隆真实安装也不会继承 Git 私有标记。
@@ -1154,7 +1213,8 @@ CLASHCTL_HOME="$WORK_DIR/unused/../normalized" bash "$REPO_DIR/install.sh" --ser
 [ "$(head -n 1 "$WORK_DIR/normalized/.clashctl-install")" = "$WORK_DIR/normalized" ] || fail 'marker did not use physical installation path'
 bash "$WORK_DIR/normalized/uninstall.sh" --yes >"$WORK_DIR/normalized-uninstall.out" 2>&1
 [ ! -e "$WORK_DIR/normalized" ] || fail 'normalized installation could not be uninstalled'
-# 已有主配置时重试初始化：启动失败仍返回失败，恢复后可以继续。
+# 未完成安装仍需启动；完整重装则保留停止状态。
+: >"$CLASHCTL_HOME/.clashctl-incomplete"
 printf main-config >"$CLASHCTL_HOME/data/config.yaml"
 rm -f "$CLASHCTL_HOME/data/started"
 if FAIL_START=1 bash "$CLASHCTL_HOME/install.sh" --service auto >"$WORK_DIR/start-failed.out" 2>&1; then
@@ -1270,11 +1330,11 @@ for name, data, expected in [
         with open(saved) as file:
             assert file.read() == expected, name + ": incorrect subscription URL"
 
-# 已有配置的重复安装不能再次询问或覆盖订阅，内核应正常启动。
+# 已有配置的重复安装不能再次询问或覆盖订阅，保留停止状态。
 os.remove(home + "/data/started")
 home, output, _ = install_in_terminal("tty-install")
 assert prompt not in output, "configured installation prompted again"
-assert os.path.isfile(home + "/data/started"), "configured installation did not start the kernel"
+assert not os.path.exists(home + "/data/started"), "reinstallation started a stopped kernel"
 with open(home + "/data/subscription") as saved:
     assert saved.read() == "file:///private-subscription", "repeat installation changed the subscription"
 

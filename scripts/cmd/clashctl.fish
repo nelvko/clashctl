@@ -122,6 +122,22 @@ function clashuninstall --description 'uninstall and clean the invoking shell'
     return 0
 end
 
+function clashupdate --description 'update clashctl and reload the current Fish session'
+    __clashctl_run clashupdate $argv
+    set -l rc $status
+    if test $rc -ne 0
+        return $rc
+    end
+    if set -q argv[1]; and contains -- "$argv[1]" -h --help
+        return 0
+    end
+    source "$CLASHCTL_HOME/scripts/cmd/clashctl.fish"
+    or begin
+        echo 'clashctl 已更新，但当前 Fish 加载失败，请重开终端' >&2
+        return 1
+    end
+end
+
 function clashctl
     set -l sub help
     if set -q argv[1]
@@ -159,7 +175,7 @@ if test -d $CLASHCTL_HOME/scripts/cmd
     for cmd_file in $CLASHCTL_HOME/scripts/cmd/*.sh
         set -l base (basename -- $cmd_file .sh)
         switch $base
-            case clashctl on off tui uninstall
+            case clashctl on off tui uninstall update
                 continue
         end
         set -l fn clash$base

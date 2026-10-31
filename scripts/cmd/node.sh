@@ -197,12 +197,16 @@ _node_now() {
 
 # PUT /proxies/:group  body {"name":"<member>"}；204=成功 400=不可切换 404=组不存在
 _node_apply() {
-    local group=$1 member=$2 enc body code
+    local group=$1 member=$2 enc body code rc
     enc=$(_node_urlencode "$group")
     body=$(NODE=$member "$BIN_YQ" -n -o=json '{"name": strenv(NODE)}') # 安全构造 JSON，免手动转义
     code=$(_node_curl PUT "/proxies/$enc" \
-        -H 'Content-Type: application/json' --data-raw "$body" \
-        -o /dev/null -w '%{http_code}')
+        -H 'Content-Type: application/json' --data-binary "$body" \
+        -o /dev/null -w '%{http_code}') || {
+        rc=$?
+        _failcat "切换失败：控制器请求失败（curl 退出码：$rc）"
+        return 1
+    }
     case $code in
     204) _okcat "已切换 [$group] → $member" ;;
     400) _failcat "切换失败：节点 [$member] 不在策略组 [$group] 内，或该组不可手动切换" ;;

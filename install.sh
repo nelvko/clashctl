@@ -871,6 +871,47 @@ _install_initialize() {
         ( _install_use_service "$selected_service" && _service_check_conflict ) || return 1
     fi
 
+    # 完整安装的重装只修复组件和刷新服务定义，不改变启停或自启状态。
+    # 显式切换后端时，沿用现有事务恢复机制；显式订阅仍按 --sub 的语义激活。
+    if [ "${_INSTALL_EXISTING_COMPLETE:-false}" = true ]; then
+        if ! command -v "$BIN_YQ" >/dev/null 2>&1; then
+            _install_ui_step '修复缺失的 yq'
+            prepare_zip yq || return 1
+        fi
+        if [ ! -e "$BIN_KERNEL" ] && [ ! -L "$BIN_KERNEL" ]; then
+            _install_ui_step '修复缺失的内核文件'
+            prepare_zip kernel || return 1
+        fi
+        _set_env CLASHCTL_UPDATE_BRANCH "$branch" && _set_env GH_PROXY "$proxy" || return 1
+        [ "${4:-}" != x ] || _set_env CLASHCTL_DOWNLOAD_TIMEOUT "$5" || return 1
+        _install_apply_service "$selected_service" "$saved_service" || return 1
+        if [ "${service_switch_pending:-false}" = true ]; then
+            if [ "$service_previous_active" = true ]; then
+                if [ "$service_previous_privileged" = true ]; then
+                    service_sudo_start || return 1
+                else
+                    service_start || return 1
+                fi
+            fi
+            [ "$service_previous_enabled" != true ] || service_enable || return 1
+        fi
+        . "$CLASHCTL_HOME/scripts/cmd/clashctl.sh" || return 1
+        _install_restore_operation_lock || return 1
+        if [ -n "$subscription" ] && ! clashsub add --use "$subscription"; then
+            _install_ui_warn '订阅添加失败，可稍后重试'
+            _INSTALL_SUBSCRIPTION_RETRY=true
+        fi
+        if [ -n "$subscription" ]; then
+            _install_ui_ok '已刷新安装，订阅按 --sub 请求处理'
+        else
+            _install_ui_ok '已刷新安装，保留原服务启停与自启设置'
+        fi
+        rc=0
+        apply_rc || rc=$?
+        [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]
+        return
+    fi
+
     _install_ui_step '准备运行组件'
     install -d -m 0700 "$CLASH_DATA_DIR" "$CLASH_PROFILES_DIR" || return 1
     local source target
@@ -988,7 +1029,7 @@ main() (
     local proxy=${GH_PROXY:-} proxy_set=${GH_PROXY+x} stage='' arg method
     local requested_timeout=${CLASHCTL_DOWNLOAD_TIMEOUT-} timeout_set=${CLASHCTL_DOWNLOAD_TIMEOUT+x}
     local local_source=false script_dir='' existing_kind='' legacy_home='' legacy_kernel='' backup=''
-    local prepared_archives=false
+    local prepared_archives=false _INSTALL_EXISTING_COMPLETE=false
     local CLASHCTL_INSTALL_LOCK_LIB=''
     local legacy_recovery_required=false legacy_shell_backup=''
     local legacy_service_file='' legacy_service_target='' legacy_service_active=false legacy_service_enabled=false
@@ -1100,6 +1141,9 @@ main() (
   指定更新分支:
     bash install.sh --branch master
 
+完整安装再次运行时保留服务启停与自启设置，按需补齐组件。
+显式 --sub 仍会激活订阅并启动内核。
+
 安装后重新打开终端，或按完成提示加载命令:
   clashctl tui                         可视化管理，支持 English / 简体中文
   clashctl sub add --use "<订阅链接>"   添加并启用订阅
@@ -1206,6 +1250,7 @@ HELP
             export CLASHCTL_HOME="$install_home" CLASHCTL_SRC="$install_home"
             if [ -f "$install_home/.env" ] && [ ! -e "$install_home/.clashctl-uninitialized" ] &&
                 [ ! -e "$install_home/.clashctl-incomplete" ]; then
+                _INSTALL_EXISTING_COMPLETE=true
                 _install_intro '更新现有安装' "$install_home" "$home_source" "$local_source" "$branch"
                 _install_refresh_current "$install_home" "$method" "$local_source" "$script_dir" "$branch" "$proxy" || return 1
             else
@@ -1359,7 +1404,7 @@ HELP
     fi
     export CLASHCTL_HOME="$install_home" CLASHCTL_SRC="$install_home" CLASHCTL_KERNEL="$kernel"
     export CLASHCTL_UPDATE_BRANCH="$branch" GH_PROXY="$proxy"
-    if ! { (umask 077; : >"$install_home/.clashctl-incomplete") &&
+    if ! { { [ "$_INSTALL_EXISTING_COMPLETE" = true ] || (umask 077; : >"$install_home/.clashctl-incomplete"); } &&
         _install_initialize "$kernel" "$branch" "$proxy" "$timeout_set" "$requested_timeout" "$backup" "$subscription" "$requested_service"; }; then
         if [ -n "$backup" ]; then
             _install_legacy_rollback "$legacy_home" "$backup" "$install_home" "$legacy_kernel" || return 1

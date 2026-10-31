@@ -51,10 +51,13 @@ args = sys.argv[1:]
 group = {"type": "Selector", "now": "DIRECT", "all": ["节点 A 🇭🇰", "DIRECT"]}
 proxies = {"策略 A 🚀": group, "策略 B": group, "节点 A 🇭🇰": {"type": "Shadowsocks"}, "DIRECT": {"type": "Direct"}}
 if kind == "curl":
+    if "--data-raw" in args:
+        print("curl: option --data-raw: is unknown", file=sys.stderr)
+        sys.exit(2)
     url = next(x for x in args if x.startswith("http://fixture.invalid"))
     route = unquote(urlparse(url).path)
     if args[args.index("-X") + 1] == "PUT":
-        body = json.loads(args[args.index("--data-raw") + 1])
+        body = json.loads(args[args.index("--data-binary") + 1])
         pathlib.Path(os.environ["CLASHCTL_HOME"], "data", "selected").write_text(json.dumps([route, body["name"]], ensure_ascii=False))
         print("204", end="")
     else:
