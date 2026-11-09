@@ -29,6 +29,16 @@
 <table>
   <tr>
     <td width="180" align="center" valign="middle">
+      <a href="https://mtnapi.com/r/cvctl">
+        <img width="100" alt="千山算力" src="https://github.com/user-attachments/assets/6c2ca4ff-0fe7-4c14-a3ac-fe8225fa6c49" />
+      </a>
+    </td>
+    <td valign="middle">
+      <b><a href="https://mtnapi.com/r/cvctl">千山算力</a></b> 是一家稳定、低价的 AI 服务中转商，GPT 模型最低倍率 0.07x，支持最新生图模型 GPT 2.6，生图价格低至 0.05/张。每周四推出限时活动，不定期开展福利活动，每日签到领鸡蛋，支持开票。欢迎广大用户接入，<a href="https://mtnapi.com/register?aff=78G6G6YTQSP4">注册免费申请额度</a>。
+    </td>
+  </tr>
+  <tr>
+    <td width="180" align="center" valign="middle">
       <a href="https://get.sushi3.cloud/#/home?code=aHno9F9G">
         <img width="80" alt="寿司云" src="https://github.com/user-attachments/assets/ef609476-caf8-49bf-981d-651b2875a3a0" />
       </a>
