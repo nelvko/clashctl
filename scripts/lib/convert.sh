@@ -73,6 +73,8 @@ _normalize_sub_config() {
 }
 
 _is_html_response() {
+    # 优先识别原生配置，避免HTML标签触发误判
+    _is_native_yaml_config "$1" && return 1
     LC_ALL=C grep -qiE '<[[:space:]]*(!doctype|html|head|body|title)([[:space:]>]|$)' "$1"
 }
 
