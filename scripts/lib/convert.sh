@@ -78,8 +78,8 @@ _is_html_response() {
 
 _is_native_yaml_config() {
     "$BIN_YQ" -e '
-      ((.proxies // []) | type == "!!seq" and length > 0) or
-      ((.proxy-providers // {}) | type == "!!map" and length > 0)
+      ((.proxies // []) | (type == "!!seq" and length > 0)) or
+      ((.proxy-providers // {}) | (type == "!!map" and length > 0))
     ' "$1" >/dev/null 2>&1
 }
 
