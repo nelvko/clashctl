@@ -31,7 +31,7 @@ clashui() {
     printf "║     🔓 注意放行端口：%-5s                    ║\n" "$EXT_PORT"
     printf "║     🏠 内网：%-31s  ║\n" "$local_address"
     printf "║     🌏 公网：%-31s  ║\n" "$public_address"
-    printf "║     ☁️  公共：%-31s  ║\n" "$common_address"
+    printf "║     ☁️ 公共：%-31s  ║\n" "$common_address"
     printf "║                                               ║\n"
     printf "╚═══════════════════════════════════════════════╝\n"
     printf "\n"
